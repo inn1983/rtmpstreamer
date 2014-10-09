@@ -47,12 +47,12 @@ inline void CleanupSockets()
 #endif  
 }  
 
-char * put_byte( char *output, uint8_t nVal )  
+char * put_byte( char *output, uint8_t nVal )
 {  
 	output[0] = nVal;  
 	return output+1;  
 }  
-char * put_be16(char *output, uint16_t nVal )  
+char * put_be16(char *output, uint16_t nVal )
 {  
 	output[1] = nVal & 0xff;  
 	output[0] = nVal >> 8;  
@@ -116,6 +116,17 @@ static slice_t *slice_alloc(const void *data, int len, int64_t pts)
 	return ns;
 }
 
+static slice_t *slice_alloc(const void *p1, int l1, const void *p2, int l2, int64_t pts)
+{
+	slice_t *ns = (slice_t*)malloc(sizeof(slice_t));
+	ns->data_ = malloc(l1+l2);
+	memcpy(ns->data_, p1, l1);
+	memcpy((unsigned char*)ns->data_ + l1, p2, l2);
+	ns->pts_ = pts;
+	ns->len_ = l1+l2;
+	return ns;
+}
+
 static void slice_free(slice_t *s)
 {
 	free(s->data_);
@@ -168,11 +179,11 @@ int get_next_slice(NaluUnit &nalu)
 	}
 
 	memcpy(g_avfifo->outbuf_, s->data_, s->len_);
-	nalu.data = (unsigned char*)g_avfifo->outbuf_;
+	nalu.data = (unsigned char*)g_avfifo->outbuf_+4;
 	nalu.type = nalu.data[0]&0x1f;
-	nalu.size = s->len_;
+	nalu.size = s->len_-4;
 
-	int rc = s->len_;
+	int rc = nalu.size;
 	slice_free(s);
 
 	g_avfifo->cs_fifo_.leave();
@@ -316,6 +327,10 @@ int CCapEncoder::Encode(void)
 		VencInputBuffer input_buffer;
 		//VencOutputBuffer output_buffer;
 		
+		// FIXME: encode 需要消耗一定时间，这里不准确
+		//usleep(1000 * 1000 / m_base_cfg.maxKeyInterval);	// 25fps
+		msleep(20);	// 25fps
+		
 		memset(&input_buffer, 0, sizeof(VencInputBuffer));
 		
 		// dequene buffer from input buffer quene;
@@ -347,7 +362,7 @@ int CCapEncoder::Encode(void)
 		
 		if (m_output_buffer.size0 > 0) {
 			ost::MutexLock al(g_avfifo->cs_fifo_);
-			unsigned char *p = m_output_buffer.ptr0;
+			
 			if (g_avfifo->fifo_.size() > 200) {
 				fprintf(stderr, "fifo overflow ...\n");
 				// 当积累的太多时清除fifo
@@ -358,28 +373,14 @@ int CCapEncoder::Encode(void)
 					fprintf(stderr, "E");
 				}
 			}
-			
-			g_avfifo->fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts));
-			g_avfifo->sem_fifo_.post();
-		}
 		
-		if (m_output_buffer.size1 > 0) {
-			ost::MutexLock al(g_avfifo->cs_fifo_);
-			unsigned char *p = m_output_buffer.ptr1;
-			
-			if (g_avfifo->fifo_.size() > 200) {
-				fprintf(stderr, "fifo overflow ...\n");
-				// 当积累的太多，并且收到关键帧清空
-				while (!g_avfifo->fifo_.empty()) {
-					slice_t *s = g_avfifo->fifo_.front();
-					g_avfifo->fifo_.pop_front();
-					slice_free(s);
-					fprintf(stderr, "E");
-				}
+			if(m_output_buffer.size1 > 0){
+				g_avfifo->fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.ptr1, m_output_buffer.size1, m_output_buffer.pts));
+			}
+			else{
+				g_avfifo->fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts));
 			
 			}
-			
-			g_avfifo->fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts));
 			g_avfifo->sem_fifo_.post();
 		}
 		
@@ -406,7 +407,7 @@ int CCapEncoder::ReturnBitstream(void)
 }
 #endif
 
-CRTMPStream::CRTMPStream(void):
+CRTMPStream::CRTMPStream(bool bEncode):
 m_pRtmp(NULL),
 m_nFileBufSize(0),
 m_nCurPos(0)
@@ -416,8 +417,10 @@ m_nCurPos(0)
 	InitSockets();
 	m_pRtmp = RTMP_Alloc();  
 	RTMP_Init(m_pRtmp);
+	m_venc_cam_cxt = NULL;
 	
-	m_venc_cam_cxt = new CCapEncoder();
+	if(bEncode)
+		m_venc_cam_cxt = new CCapEncoder();
 	
 	g_avfifo = new AVfifo_t;
 
@@ -433,7 +436,8 @@ CRTMPStream::~CRTMPStream(void)
 	#endif
 	delete[] m_pFileBuf;
 	
-	delete m_venc_cam_cxt;
+	if(m_venc_cam_cxt)
+		delete m_venc_cam_cxt;
 	
 	if(g_avfifo){
 		free(g_avfifo->outbuf_);
@@ -611,7 +615,7 @@ bool CRTMPStream::SendH264Packet(unsigned char *data,unsigned int size,bool bIsK
 	return bRet;
 }
 
-bool CRTMPStream::SendH264File(const char *pFileName)
+bool CRTMPStream::SendCapEncode(void)
 {
 /*
 	if(pFileName == NULL)
@@ -636,12 +640,12 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 
     NaluUnit naluUnit;
 	// 读取SPS帧
-    ReadOneNaluFromBuf(naluUnit);
+    ReadOneNaluFromBuf_enc(naluUnit);
 	metaData.nSpsLen = naluUnit.size;
 	memcpy(metaData.Sps,naluUnit.data,naluUnit.size);
 
 	// 读取PPS帧
-	ReadOneNaluFromBuf(naluUnit);
+	ReadOneNaluFromBuf_enc(naluUnit);
 	metaData.nPpsLen = naluUnit.size;
 	memcpy(metaData.Pps,naluUnit.data,naluUnit.size);
 
@@ -650,7 +654,8 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 	h264_decode_sps(metaData.Sps,metaData.nSpsLen,width,height);
 	metaData.nWidth = width;
 	metaData.nHeight = height;
-	metaData.nFrameRate = m_venc_cam_cxt->m_base_cfg.framerate;
+	//metaData.nFrameRate = m_venc_cam_cxt->m_base_cfg.framerate;
+	metaData.nFrameRate = m_venc_cam_cxt->m_base_cfg.maxKeyInterval;
 	LOGD("metaData.nWidth is %d, metaData.nHeight is %d.\n", metaData.nWidth, metaData.nHeight);
    
 	// 发送MetaData
@@ -663,20 +668,38 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
 		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
-		msleep(33);
-		tick +=33;
+		LOGD("naluUnit.size:%d, bKeyframe:%d, tick:%d.\n", naluUnit.size, bKeyframe, tick);
+		
+		msleep(40);
+		tick +=40;
 	}
 
 	return TRUE;
 }
 
-bool CRTMPStream::SendCapEncode(void)
+bool CRTMPStream::SendH264File(const char *pFileName)
 {
+	if(pFileName == NULL)
+	{
+		return FALSE;
+	}
+	FILE *fp = fopen(pFileName, "rb");  
+	if(!fp)  
+	{  
+		printf("ERROR:open file %s failed!",pFileName);
+	}  
+	fseek(fp, 0, SEEK_SET);
+	m_nFileBufSize = fread(m_pFileBuf, sizeof(unsigned char), FILEBUFSIZE, fp);
+	if(m_nFileBufSize >= FILEBUFSIZE)
+	{
+		printf("warning : File size is larger than BUFSIZE\n");
+	}
+	fclose(fp);  
+
 	RTMPMetadata metaData;
 	memset(&metaData,0,sizeof(RTMPMetadata));
 
     NaluUnit naluUnit;
-	
 	// 读取SPS帧
     ReadOneNaluFromBuf(naluUnit);
 	metaData.nSpsLen = naluUnit.size;
@@ -689,16 +712,13 @@ bool CRTMPStream::SendCapEncode(void)
 
 	// 解码SPS,获取视频图像宽、高信息
 	int width = 0,height = 0;
-	h264_decode_sps(metaData.Sps,metaData.nSpsLen,width,height);
+    h264_decode_sps(metaData.Sps,metaData.nSpsLen,width,height);
 	metaData.nWidth = width;
-	metaData.nHeight = height;
+    metaData.nHeight = height;
 	metaData.nFrameRate = 25;
-
-	LOGD("metaData.nWidth is %d, metaData.nHeight is %d.\n", metaData.nWidth, metaData.nHeight);
-
    
 	// 发送MetaData
-	SendMetadata(&metaData);
+    SendMetadata(&metaData);
 
 	unsigned int tick = 0;
 	while(ReadOneNaluFromBuf(naluUnit))
@@ -706,18 +726,16 @@ bool CRTMPStream::SendCapEncode(void)
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
 		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
-		msleep(40);
-		tick +=40;
+		LOGD("naluUnit.size:%d, bKeyframe:%d, tick:%d.\n", naluUnit.size, bKeyframe, tick);
+		
+		usleep(30*1000);
+		tick +=30;
 	}
 
 	return TRUE;
-
-
-
-
 }
 
-bool CRTMPStream::ReadOneNaluFromBuf(NaluUnit &nalu)
+bool CRTMPStream::ReadOneNaluFromBuf_enc(NaluUnit &nalu)
 {
 	int i = m_nCurPos;
 	while(i < m_venc_cam_cxt->m_header_data.length)
@@ -749,6 +767,46 @@ bool CRTMPStream::ReadOneNaluFromBuf(NaluUnit &nalu)
 			}
 			nalu.type = m_venc_cam_cxt->m_header_data.bufptr[i]&0x1f;
 			nalu.data = &m_venc_cam_cxt->m_header_data.bufptr[i];
+
+			m_nCurPos = pos-4;
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+bool CRTMPStream::ReadOneNaluFromBuf(NaluUnit &nalu)
+{
+	int i = m_nCurPos;
+	while(i<m_nFileBufSize)
+	{
+		if(m_pFileBuf[i++] == 0x00 &&
+			m_pFileBuf[i++] == 0x00 &&
+			m_pFileBuf[i++] == 0x00 &&
+			m_pFileBuf[i++] == 0x01
+			)
+		{
+			int pos = i;
+			while (pos<m_nFileBufSize)
+			{
+				if(m_pFileBuf[pos++] == 0x00 &&
+					m_pFileBuf[pos++] == 0x00 &&
+					m_pFileBuf[pos++] == 0x00 &&
+					m_pFileBuf[pos++] == 0x01
+					)
+				{
+					break;
+				}
+			}
+			if(pos == m_nFileBufSize)
+			{
+				nalu.size = pos-i;	
+			}
+			else
+			{
+				nalu.size = (pos-4)-i;
+			}
+			nalu.type = m_pFileBuf[i]&0x1f;
+			nalu.data = &m_pFileBuf[i];
 
 			m_nCurPos = pos-4;
 			return TRUE;

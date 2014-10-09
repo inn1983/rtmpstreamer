@@ -108,7 +108,7 @@ private:
 class CRTMPStream
 {
 public:
-	CRTMPStream(void);
+	CRTMPStream(bool bEncode);
 	~CRTMPStream(void);
 public:
 	// 连接到RTMP Server
@@ -121,10 +121,11 @@ public:
 	bool SendH264Packet(unsigned char *data,unsigned int size,bool bIsKeyFrame,unsigned int nTimeStamp);
 	// 发送H264文件
 	bool SendH264File(const char *pFileName);
-	
+	//
 	bool SendCapEncode(void);
 private:
 	// 送缓存中读取一个NALU包
+	bool ReadOneNaluFromBuf_enc(NaluUnit &nalu);
 	bool ReadOneNaluFromBuf(NaluUnit &nalu);
 	// 发送数据
 	int SendPacket(unsigned int nPacketType,unsigned char *data,unsigned int size,unsigned int nTimestamp);
