@@ -160,6 +160,7 @@ int get_next_slice(NaluUnit &nalu)
 
 	slice_t *s = g_avfifo->fifo_.front();
 	g_avfifo->fifo_.pop_front();
+	fprintf(stderr, "fifo size is %d.\n", g_avfifo->fifo_.size());
 
 	if (s->len_ > g_avfifo->outbuf_size_) {
 		g_avfifo->outbuf_size_ = (s->len_ + 4095)/4096*4096;
@@ -169,6 +170,7 @@ int get_next_slice(NaluUnit &nalu)
 	memcpy(g_avfifo->outbuf_, s->data_, s->len_);
 	nalu.data = (unsigned char*)g_avfifo->outbuf_;
 	nalu.type = nalu.data[0]&0x1f;
+	nalu.size = s->len_;
 
 	int rc = s->len_;
 	slice_free(s);
@@ -645,13 +647,14 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 
 	// 解码SPS,获取视频图像宽、高信息
 	int width = 0,height = 0;
-    h264_decode_sps(metaData.Sps,metaData.nSpsLen,width,height);
+	h264_decode_sps(metaData.Sps,metaData.nSpsLen,width,height);
 	metaData.nWidth = width;
-    metaData.nHeight = height;
+	metaData.nHeight = height;
 	metaData.nFrameRate = m_venc_cam_cxt->m_base_cfg.framerate;
+	LOGD("metaData.nWidth is %d, metaData.nHeight is %d.\n", metaData.nWidth, metaData.nHeight);
    
 	// 发送MetaData
-    SendMetadata(&metaData);
+	SendMetadata(&metaData);
 
 	unsigned int tick = 0;
 	//while(ReadOneNaluFromBuf(naluUnit))
@@ -660,8 +663,8 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
 		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
-		msleep(40);
-		tick +=40;
+		msleep(33);
+		tick +=33;
 	}
 
 	return TRUE;
@@ -686,13 +689,16 @@ bool CRTMPStream::SendCapEncode(void)
 
 	// 解码SPS,获取视频图像宽、高信息
 	int width = 0,height = 0;
-    h264_decode_sps(metaData.Sps,metaData.nSpsLen,width,height);
+	h264_decode_sps(metaData.Sps,metaData.nSpsLen,width,height);
 	metaData.nWidth = width;
-    metaData.nHeight = height;
+	metaData.nHeight = height;
 	metaData.nFrameRate = 25;
+
+	LOGD("metaData.nWidth is %d, metaData.nHeight is %d.\n", metaData.nWidth, metaData.nHeight);
+
    
 	// 发送MetaData
-    SendMetadata(&metaData);
+	SendMetadata(&metaData);
 
 	unsigned int tick = 0;
 	while(ReadOneNaluFromBuf(naluUnit))
