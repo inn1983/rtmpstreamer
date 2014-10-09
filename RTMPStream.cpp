@@ -15,6 +15,14 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 #pragma comment(lib,"winmm.lib")
 #endif
 
+#define LOG_NDEBUG 0
+#define LOG_TAG "venc-file"
+#include "CDX_Debug.h"
+
+
+
+AVfifo_t* g_avfifo; //グローバルfifo
+
 enum
 {
 	FLV_CODECID_H264 = 7,
@@ -97,6 +105,305 @@ char * put_amf_double( char *c, double d )
 	return c+8;  
 }
 
+static slice_t *slice_alloc(const void *data, int len, int64_t pts)
+{
+	slice_t *ns = (slice_t *)malloc(sizeof(slice_t));
+	ns->data_ = malloc(len);
+	memcpy(ns->data_, data, len);
+	ns->pts_ = pts;
+	ns->len_ = len;
+
+	return ns;
+}
+
+static void slice_free(slice_t *s)
+{
+	free(s->data_);
+	free(s);
+}
+
+static void uyvy_nv12(const unsigned char *puyvy, unsigned char *pnv12, int width, int height)
+{
+	unsigned char *Y = pnv12;
+	unsigned char *UV = Y + width * height;
+	//unsigned char *V = U + width * height / 4;
+	int i, j;
+
+	for (i = 0; i < height / 2; i++) {
+		// 奇数行保留 U/V
+		for (j = 0; j < width / 2; j++) {
+			*UV++ = *puyvy++;	//U
+			*Y++ = *puyvy++;
+			*UV++ = *puyvy++;	//V
+			*Y++ = *puyvy++;
+		}
+
+		// 偶数行的 UV 直接扔掉
+		for (j = 0; j < width / 2; j++) {
+			puyvy++;		// 跳过 U
+			*Y++ = *puyvy++;
+			puyvy++;		// 跳过 V
+			*Y++ = *puyvy++;
+		}
+	}
+
+}
+
+int get_next_slice(NaluUnit &nalu)
+{
+	g_avfifo->cs_fifo_.enter();
+	while (g_avfifo->fifo_.empty()) {
+		g_avfifo->cs_fifo_.leave();
+		g_avfifo->sem_fifo_.wait();
+		g_avfifo->cs_fifo_.enter();
+	}
+
+	slice_t *s = g_avfifo->fifo_.front();
+	g_avfifo->fifo_.pop_front();
+
+	if (s->len_ > g_avfifo->outbuf_size_) {
+		g_avfifo->outbuf_size_ = (s->len_ + 4095)/4096*4096;
+		g_avfifo->outbuf_ = realloc(g_avfifo->outbuf_, g_avfifo->outbuf_size_);
+	}
+
+	memcpy(g_avfifo->outbuf_, s->data_, s->len_);
+	nalu.data = (unsigned char*)g_avfifo->outbuf_;
+	nalu.type = nalu.data[0]&0x1f;
+
+	int rc = s->len_;
+	slice_free(s);
+
+	g_avfifo->cs_fifo_.leave();
+
+	return rc;
+}
+
+int CameraSourceCallback(void *cookie,  void *data)
+{
+	CCapEncoder * venc_cam_cxt = (CCapEncoder *)cookie;
+	cedarv_encoder_t *venc_device = venc_cam_cxt->m_venc_device;
+	AWCameraDevice *CameraDevice = venc_cam_cxt->m_CameraDevice;
+	static int has_alloc_buffer = 0;
+	
+	VencInputBuffer input_buffer;
+	int result = 0;
+	//int has_alloc_buffer = 0;
+	
+
+	struct v4l2_buffer *p_buf = (struct v4l2_buffer *)data;
+	v4l2_mem_map_t* p_v4l2_mem_map = GetMapmemAddress(getV4L2ctx(CameraDevice));	
+
+	void *buffer = (void *)p_v4l2_mem_map->mem[p_buf->index];
+	int size_y = venc_cam_cxt->m_base_cfg.input_width*venc_cam_cxt->m_base_cfg.input_height; 
+
+	memset(&input_buffer, 0, sizeof(VencInputBuffer));
+	
+	do{	//retry
+		result = venc_device->ioctrl(venc_device, VENC_CMD_GET_ALLOCATE_INPUT_BUFFER, &input_buffer);
+		LOGD("no alloc input buffer right now");
+		usleep(10*1000);
+	}while(result !=0 );
+	
+	uyvy_nv12( (unsigned char*)buffer, input_buffer.addrvirY, 720, 480);
+	
+	//input_buffer.id = p_buf->index;
+	//input_buffer.addrphyY = p_buf->m.offset;
+	//input_buffer.addrphyC = p_buf->m.offset + size_y;
+
+	//LOGD("buffer address is %x", buffer);
+	//input_buffer.addrvirY = buffer;
+	//input_buffer.addrvirC = buffer + size_y;
+
+	input_buffer.pts = 1000000 * (long long)p_buf->timestamp.tv_sec + (long long)p_buf->timestamp.tv_usec;
+	LOGD("pts = %ll", input_buffer.pts);
+
+#if 1
+	if(input_buffer.addrphyY >=  (void*)0x40000000)
+		input_buffer.addrphyY -=0x40000000;
+#endif
+
+	//if(!venc_cam_cxt->mstart) {
+		LOGD("p_buf->index = %d\n", p_buf->index);
+	//	CameraDevice->returnFrame(CameraDevice, p_buf->index);
+	//}
+
+    // enquene buffer to input buffer quene
+    
+	LOGD("ID = %d\n", input_buffer.id);
+	result = venc_device->ioctrl(venc_device, VENC_CMD_ENQUENE_INPUT_BUFFER, &input_buffer);
+
+	if(result < 0) {
+		//CameraDevice->returnFrame(CameraDevice, p_buf->index);
+		LOGW("video input buffer is full , skip this frame");
+	}
+	CameraDevice->returnFrame(CameraDevice, p_buf->index);
+
+	return 0;
+}
+
+CCapEncoder::CCapEncoder(void)
+{
+	m_base_cfg.codectype = VENC_CODEC_H264;
+	m_base_cfg.framerate = 30;
+	m_base_cfg.input_width = 720;
+	m_base_cfg.input_height= 480;
+	m_base_cfg.dst_width = 720;
+	m_base_cfg.dst_height = 480;
+	m_base_cfg.maxKeyInterval = 25;
+	m_base_cfg.inputformat = VENC_PIXEL_YUV420; //uv combined
+	m_base_cfg.targetbitrate = 3*1024*1024;
+	
+	m_alloc_parm.buffernum = 4;
+	
+	LOGD("cedarx_hardware_init");
+	cedarx_hardware_init(0);
+	
+	LOGD("Codec version = %s", getCodecVision());
+	
+	m_venc_device = cedarvEncInit();
+	m_venc_device->ioctrl(m_venc_device, VENC_CMD_BASE_CONFIG, &m_base_cfg);
+	m_venc_device->ioctrl(m_venc_device, VENC_CMD_ALLOCATE_INPUT_BUFFER, &m_alloc_parm);
+	m_venc_device->ioctrl(m_venc_device, VENC_CMD_OPEN, 0);
+	m_venc_device->ioctrl(m_venc_device, VENC_CMD_HEADER_DATA, &m_header_data);
+	
+	LOGD("create encoder ok");
+	
+	/* create source */
+	m_CameraDevice = CreateCamera(m_base_cfg.input_width, m_base_cfg.input_height);
+	LOGD("create camera ok");
+	
+	/* set camera source callback */
+	m_CameraDevice->setCameraDatacallback(m_CameraDevice, 
+		(void *)this, (void *)&CameraSourceCallback);
+	
+	/* start camera */
+	m_CameraDevice->startCamera(m_CameraDevice);
+	
+	/* start encoder */
+	m_mstart = 1;
+	start(); //start thread
+	
+}
+
+
+CCapEncoder::~CCapEncoder(void)
+{
+	m_CameraDevice->stopCamera(m_CameraDevice);
+	
+	DestroyCamera(m_CameraDevice);
+	m_CameraDevice = NULL;
+	
+	m_venc_device->ioctrl(m_venc_device, VENC_CMD_CLOSE, 0);
+	cedarvEncExit(m_venc_device);
+	m_venc_device = NULL;
+
+	cedarx_hardware_exit(0);
+	m_mstart = 0;
+	join();
+}
+
+VencSeqHeader CCapEncoder::GetHeader()
+{
+	return m_header_data;
+}
+
+int CCapEncoder::Encode(void)
+{
+	while (m_mstart) {
+		int result = 0;
+		VencInputBuffer input_buffer;
+		//VencOutputBuffer output_buffer;
+		
+		memset(&input_buffer, 0, sizeof(VencInputBuffer));
+		
+		// dequene buffer from input buffer quene;
+		result = m_venc_device->ioctrl(m_venc_device, VENC_CMD_DEQUENE_INPUT_BUFFER, &input_buffer);
+		
+		if(result<0)
+		{
+			LOGV("enquene input buffer is empty");
+			usleep(10*1000);
+			continue;
+		}
+		
+		cedarx_cache_op((long int)input_buffer.addrvirY, 
+					(long int)input_buffer.addrvirY + m_base_cfg.input_width * m_base_cfg.input_width * 3/2, 0);
+		
+		result = m_venc_device->ioctrl(m_venc_device, VENC_CMD_ENCODE, &input_buffer);
+		
+		// return the buffer to the alloc buffer quene after encoder
+		m_venc_device->ioctrl(m_venc_device, VENC_CMD_RETURN_ALLOCATE_INPUT_BUFFER, &input_buffer);
+		
+		if (result != 0) {
+			usleep(10000);
+			printf("not encode, ret: %d\n", result);
+			::exit(-1);
+		}
+		
+		memset(&m_output_buffer, 0, sizeof(VencOutputBuffer));
+		result = m_venc_device->ioctrl(m_venc_device, VENC_CMD_GET_BITSTREAM, &m_output_buffer);
+		
+		if (m_output_buffer.size0 > 0) {
+			ost::MutexLock al(g_avfifo->cs_fifo_);
+			unsigned char *p = m_output_buffer.ptr0;
+			if (g_avfifo->fifo_.size() > 200) {
+				fprintf(stderr, "fifo overflow ...\n");
+				// 当积累的太多时清除fifo
+				while (!g_avfifo->fifo_.empty()) {
+					slice_t *s = g_avfifo->fifo_.front();
+					g_avfifo->fifo_.pop_front();
+					slice_free(s);
+					fprintf(stderr, "E");
+				}
+			}
+			
+			g_avfifo->fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts));
+			g_avfifo->sem_fifo_.post();
+		}
+		
+		if (m_output_buffer.size1 > 0) {
+			ost::MutexLock al(g_avfifo->cs_fifo_);
+			unsigned char *p = m_output_buffer.ptr1;
+			
+			if (g_avfifo->fifo_.size() > 200) {
+				fprintf(stderr, "fifo overflow ...\n");
+				// 当积累的太多，并且收到关键帧清空
+				while (!g_avfifo->fifo_.empty()) {
+					slice_t *s = g_avfifo->fifo_.front();
+					g_avfifo->fifo_.pop_front();
+					slice_free(s);
+					fprintf(stderr, "E");
+				}
+			
+			}
+			
+			g_avfifo->fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts));
+			g_avfifo->sem_fifo_.post();
+		}
+		
+		result = m_venc_device->ioctrl(m_venc_device, VENC_CMD_RETURN_BITSTREAM, &m_output_buffer);
+	}
+	
+	return 0;
+
+}
+
+void CCapEncoder::run()
+{
+	Encode();
+}
+
+
+#if 0
+int CCapEncoder::ReturnBitstream(void)
+{
+	int result = 0;
+	result = m_venc_device->ioctrl(m_venc_device, VENC_CMD_RETURN_BITSTREAM, &m_output_buffer);
+	
+	return result;
+}
+#endif
+
 CRTMPStream::CRTMPStream(void):
 m_pRtmp(NULL),
 m_nFileBufSize(0),
@@ -106,7 +413,14 @@ m_nCurPos(0)
 	memset(m_pFileBuf,0,FILEBUFSIZE);
 	InitSockets();
 	m_pRtmp = RTMP_Alloc();  
-	RTMP_Init(m_pRtmp);  
+	RTMP_Init(m_pRtmp);
+	
+	m_venc_cam_cxt = new CCapEncoder();
+	
+	g_avfifo = new AVfifo_t;
+
+	g_avfifo->outbuf_ = malloc(128*2048);
+	g_avfifo->outbuf_size_ = 128*2048;
 }
 
 CRTMPStream::~CRTMPStream(void)
@@ -116,6 +430,14 @@ CRTMPStream::~CRTMPStream(void)
 	WSACleanup();
 	#endif
 	delete[] m_pFileBuf;
+	
+	delete m_venc_cam_cxt;
+	
+	if(g_avfifo){
+		free(g_avfifo->outbuf_);
+		delete g_avfifo;
+	}
+	
 }
 
 bool CRTMPStream::Connect(const char* url)
@@ -289,6 +611,7 @@ bool CRTMPStream::SendH264Packet(unsigned char *data,unsigned int size,bool bIsK
 
 bool CRTMPStream::SendH264File(const char *pFileName)
 {
+/*
 	if(pFileName == NULL)
 	{
 		return FALSE;
@@ -305,11 +628,52 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 		printf("warning : File size is larger than BUFSIZE\n");
 	}
 	fclose(fp);  
-
+*/
 	RTMPMetadata metaData;
 	memset(&metaData,0,sizeof(RTMPMetadata));
 
     NaluUnit naluUnit;
+	// 读取SPS帧
+    ReadOneNaluFromBuf(naluUnit);
+	metaData.nSpsLen = naluUnit.size;
+	memcpy(metaData.Sps,naluUnit.data,naluUnit.size);
+
+	// 读取PPS帧
+	ReadOneNaluFromBuf(naluUnit);
+	metaData.nPpsLen = naluUnit.size;
+	memcpy(metaData.Pps,naluUnit.data,naluUnit.size);
+
+	// 解码SPS,获取视频图像宽、高信息
+	int width = 0,height = 0;
+    h264_decode_sps(metaData.Sps,metaData.nSpsLen,width,height);
+	metaData.nWidth = width;
+    metaData.nHeight = height;
+	metaData.nFrameRate = m_venc_cam_cxt->m_base_cfg.framerate;
+   
+	// 发送MetaData
+    SendMetadata(&metaData);
+
+	unsigned int tick = 0;
+	//while(ReadOneNaluFromBuf(naluUnit))
+	while(get_next_slice(naluUnit))
+	{
+		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
+		// 发送H264数据帧
+		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
+		msleep(40);
+		tick +=40;
+	}
+
+	return TRUE;
+}
+
+bool CRTMPStream::SendCapEncode(void)
+{
+	RTMPMetadata metaData;
+	memset(&metaData,0,sizeof(RTMPMetadata));
+
+    NaluUnit naluUnit;
+	
 	// 读取SPS帧
     ReadOneNaluFromBuf(naluUnit);
 	metaData.nSpsLen = naluUnit.size;
@@ -336,37 +700,40 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
 		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
-		msleep(33);
-		tick +=33;
+		msleep(40);
+		tick +=40;
 	}
 
 	return TRUE;
+
+
+
+
 }
 
 bool CRTMPStream::ReadOneNaluFromBuf(NaluUnit &nalu)
 {
 	int i = m_nCurPos;
-	while(i<m_nFileBufSize)
+	while(i < m_venc_cam_cxt->m_header_data.length)
 	{
-		if(m_pFileBuf[i++] == 0x00 &&
-			m_pFileBuf[i++] == 0x00 &&
-			m_pFileBuf[i++] == 0x00 &&
-			m_pFileBuf[i++] == 0x01
-			)
+		if(m_venc_cam_cxt->m_header_data.bufptr[i++] == 0x00 &&
+			m_venc_cam_cxt->m_header_data.bufptr[i++] == 0x00 &&
+			m_venc_cam_cxt->m_header_data.bufptr[i++] == 0x00 &&
+			m_venc_cam_cxt->m_header_data.bufptr[i++] == 0x01)
 		{
 			int pos = i;
-			while (pos<m_nFileBufSize)
+			while (pos<m_venc_cam_cxt->m_header_data.length)
 			{
-				if(m_pFileBuf[pos++] == 0x00 &&
-					m_pFileBuf[pos++] == 0x00 &&
-					m_pFileBuf[pos++] == 0x00 &&
-					m_pFileBuf[pos++] == 0x01
+				if(m_venc_cam_cxt->m_header_data.bufptr[pos++] == 0x00 &&
+					m_venc_cam_cxt->m_header_data.bufptr[pos++] == 0x00 &&
+					m_venc_cam_cxt->m_header_data.bufptr[pos++] == 0x00 &&
+					m_venc_cam_cxt->m_header_data.bufptr[pos++] == 0x01
 					)
 				{
 					break;
 				}
 			}
-			if(pos == m_nFileBufSize)
+			if(pos == m_venc_cam_cxt->m_header_data.length)
 			{
 				nalu.size = pos-i;	
 			}
@@ -374,8 +741,8 @@ bool CRTMPStream::ReadOneNaluFromBuf(NaluUnit &nalu)
 			{
 				nalu.size = (pos-4)-i;
 			}
-			nalu.type = m_pFileBuf[i]&0x1f;
-			nalu.data = &m_pFileBuf[i];
+			nalu.type = m_venc_cam_cxt->m_header_data.bufptr[i]&0x1f;
+			nalu.data = &m_venc_cam_cxt->m_header_data.bufptr[i];
 
 			m_nCurPos = pos-4;
 			return TRUE;

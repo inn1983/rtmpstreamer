@@ -10,8 +10,30 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 #include <rtmp_sys.h>
 #include <amf.h>
 #include <stdio.h>
+#include <stdlib.h>
+
+#include <deque>
+#include <cc++/thread.h>
+
+//#include "type.h"
+#include "H264encLibApi.h"
+#include "V4L2.h"
+#include "venc.h"
+#include "CameraSource.h"
+//#include "water_mark.h"
+#include "cedarv_osal_linux.h"
 
 #define FILEBUFSIZE (1024 * 1024 * 10)       //  10M
+
+// 描述一个 h264 slice
+typedef struct slice_t
+{
+	void *data_;
+	int len_;
+	int64_t pts_;
+} slice_t;
+
+typedef std::deque<slice_t*> SLICES;
 
 // NALU单元
 typedef struct _NaluUnit
@@ -43,6 +65,45 @@ typedef struct _RTMPMetadata
 
 } RTMPMetadata,*LPRTMPMetadata;
 
+typedef struct avfifo
+{	
+	SLICES fifo_;		// 用于缓冲
+	ost::Mutex cs_fifo_;	
+	ost::Semaphore sem_fifo_;
+	
+	void *outbuf_;		// 
+	int outbuf_size_;
+
+} AVfifo_t;
+
+class CCapEncoder : ost::Thread
+{
+public:
+	CCapEncoder(void);
+	~CCapEncoder(void);
+	
+	VencSeqHeader GetHeader();
+	int Encode(void);
+	//int ReturnBitstream(void);
+	
+	VencBaseConfig m_base_cfg;
+public:	
+	cedarv_encoder_t* m_venc_device;
+	AWCameraDevice* m_CameraDevice;
+	VencSeqHeader m_header_data;
+	
+private:
+	void run();
+	
+	VencInputBuffer m_input_buffer;
+	VencOutputBuffer m_output_buffer;
+	VencAllocateBufferParam m_alloc_parm;
+	pthread_t m_thread_enc_id;
+	int m_mstart;
+};
+
+
+
 
 class CRTMPStream
 {
@@ -60,6 +121,8 @@ public:
 	bool SendH264Packet(unsigned char *data,unsigned int size,bool bIsKeyFrame,unsigned int nTimeStamp);
 	// 发送H264文件
 	bool SendH264File(const char *pFileName);
+	
+	bool SendCapEncode(void);
 private:
 	// 送缓存中读取一个NALU包
 	bool ReadOneNaluFromBuf(NaluUnit &nalu);
@@ -70,6 +133,8 @@ private:
 	unsigned char* m_pFileBuf;
 	unsigned int  m_nFileBufSize;
 	unsigned int  m_nCurPos;
+	AVfifo_t m_avfifo; 
+	CCapEncoder* m_venc_cam_cxt;
 };
 
 #endif

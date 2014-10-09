@@ -15,21 +15,21 @@ CEDARX_CHIP_VERSION = A20
 #	  $(LIVE)/BasicUsageEnvironment/libBasicUsageEnvironment.a \
 #	  $(LIVE)/UsageEnvironment/libUsageEnvironment.a
 
-#SRCDIRS:=.\
-#		Camera \
+SRCDIRS:=.\
+		Camera \
 #		watermark
 
-#INCLUDES:=$(foreach dir,$(SRCDIRS),-I$(dir)) \
-#	-I./include \
-#	-I./lib \
-#	-I./include/include_system \
-#	-I./include/include_vencoder \
-#	-I./include/include_camera \
-#	-I./include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)/disp \
-#	-I./include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)
+INCLUDES:=$(foreach dir,$(SRCDIRS),-I$(dir)) \
+	-I../include \
+	-I../lib \
+	-I../include/include_system \
+	-I../include/include_vencoder \
+	-I../include/include_camera \
+	-I../include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)/disp \
+	-I../include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)
 
 #LIBRTMP=../librtmp/librtmp.a
-LIBRTMP=-L../librtmp -lrtmp
+LIBRTMP=-L../librtmp -lrtmp 
 INCRTMP=-I../librtmp
 
 CFLAGS += -Wall -DOS_LINUX -O2 -g $(INCLUDES) $(INCRTMP)
@@ -37,9 +37,9 @@ CXXFLAGS += -Wall -DOS_LINUX -O2 -g $(INCLUDES) $(INCRTMP)
 #LIBS += ./lib/A20/libvencoder.so \
 #	$(LIVE_LIBS) -lpthread -lccgnu2 -ldl
 
-LIBS += $(LIBRTMP)
+LIBS += $(LIBRTMP) ../libsunxi/A20/libvencoder.so -lpthread -lccgnu2 -ldl
 
-#SRC := $(wildcard *.c) $(foreach dir,$(SRCDIRS),$(wildcard $(dir)/*.c))
+SRC := $(wildcard *.c) $(foreach dir,$(SRCDIRS),$(wildcard $(dir)/*.c))
 SRCC := $(wildcard *.cpp)
 OBJ := $(SRC:%.c=%.o) $(SRCC:%.cpp=%.o)
 
