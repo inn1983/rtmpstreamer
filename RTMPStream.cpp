@@ -257,7 +257,7 @@ int CameraSourceCallback(void *cookie,  void *data)
 CCapEncoder::CCapEncoder(void)
 {
 	m_base_cfg.codectype = VENC_CODEC_H264;
-	m_base_cfg.framerate = 30;
+	m_base_cfg.framerate = 25;
 	m_base_cfg.input_width = 720;
 	m_base_cfg.input_height= 480;
 	m_base_cfg.dst_width = 720;
@@ -329,7 +329,7 @@ int CCapEncoder::Encode(void)
 		
 		// FIXME: encode 需要消耗一定时间，这里不准确
 		//usleep(1000 * 1000 / m_base_cfg.maxKeyInterval);	// 25fps
-		msleep(20);	// 25fps
+		msleep(37);	// 25fps
 		
 		memset(&input_buffer, 0, sizeof(VencInputBuffer));
 		
@@ -484,7 +484,8 @@ int CRTMPStream::SendPacket(unsigned int nPacketType,unsigned char *data,unsigne
 	RTMPPacket packet;
 	RTMPPacket_Reset(&packet);
 	RTMPPacket_Alloc(&packet,size);
-
+	
+	packet.m_hasAbsTimestamp = 1;
 	packet.m_packetType = nPacketType;
 	packet.m_nChannel = 0x04;  
 	packet.m_headerType = RTMP_PACKET_SIZE_LARGE;  
@@ -492,7 +493,8 @@ int CRTMPStream::SendPacket(unsigned int nPacketType,unsigned char *data,unsigne
 	packet.m_nInfoField2 = m_pRtmp->m_stream_id;
 	packet.m_nBodySize = size;
 	memcpy(packet.m_body,data,size);
-
+	
+	fprintf(stderr, "packet.m_hasAbsTimestamp is %d!!\n", packet.m_hasAbsTimestamp);
 	int nRet = RTMP_SendPacket(m_pRtmp,&packet,0);
 
 	RTMPPacket_Free(&packet);
@@ -661,16 +663,19 @@ bool CRTMPStream::SendCapEncode(void)
 	// 发送MetaData
 	SendMetadata(&metaData);
 
-	unsigned int tick = 0;
+	unsigned int tick = 0x00ff0000;
+	//unsigned int tick = 0;
 	//while(ReadOneNaluFromBuf(naluUnit))
 	while(get_next_slice(naluUnit))
 	{
+		if (tick >= 0x00fffff0)
+			tick = 0; 
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
 		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
-		LOGD("naluUnit.size:%d, bKeyframe:%d, tick:%d.\n", naluUnit.size, bKeyframe, tick);
+		LOGD("naluUnit.size:%d, bKeyframe:%d, tick:%u.\n", naluUnit.size, bKeyframe, tick);
 		
-		msleep(40);
+		msleep(37);
 		tick +=40;
 	}
 
