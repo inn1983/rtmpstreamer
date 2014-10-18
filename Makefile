@@ -20,13 +20,13 @@ SRCDIRS:=.\
 #		watermark
 
 INCLUDES:=$(foreach dir,$(SRCDIRS),-I$(dir)) \
-	-I../include \
-	-I../lib \
-	-I../include/include_system \
-	-I../include/include_vencoder \
-	-I../include/include_camera \
-	-I../include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)/disp \
-	-I../include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)
+	-I./include \
+	-I./lib \
+	-I./include/include_system \
+	-I./include/include_vencoder \
+	-I./include/include_camera \
+	-I./include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)/disp \
+	-I./include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)
 
 #LIBRTMP=../librtmp/librtmp.a
 LIBRTMP=-L../librtmp -lrtmp 

@@ -17,11 +17,16 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 
 #define LOG_NDEBUG 0
 #define LOG_TAG "venc-file"
+//#define LOG_FILE 1
+#define LOG_FILE_DUMMY 1
 #include "CDX_Debug.h"
 
 
 
 AVfifo_t* g_avfifo; //グローバルfifo
+
+FILE* g_debuglog = NULL;
+
 
 enum
 {
@@ -213,7 +218,7 @@ int CameraSourceCallback(void *cookie,  void *data)
 	
 	do{	//retry
 		result = venc_device->ioctrl(venc_device, VENC_CMD_GET_ALLOCATE_INPUT_BUFFER, &input_buffer);
-		LOGD("no alloc input buffer right now");
+		LOGD(g_debuglog, "no alloc input buffer right now");
 		usleep(10*1000);
 	}while(result !=0 );
 	
@@ -228,7 +233,7 @@ int CameraSourceCallback(void *cookie,  void *data)
 	//input_buffer.addrvirC = buffer + size_y;
 
 	input_buffer.pts = 1000000 * (long long)p_buf->timestamp.tv_sec + (long long)p_buf->timestamp.tv_usec;
-	LOGD("pts = %ll", input_buffer.pts);
+	LOGD(g_debuglog, "pts = %ll", input_buffer.pts);
 
 #if 1
 	if(input_buffer.addrphyY >=  (void*)0x40000000)
@@ -236,13 +241,13 @@ int CameraSourceCallback(void *cookie,  void *data)
 #endif
 
 	//if(!venc_cam_cxt->mstart) {
-		LOGD("p_buf->index = %d\n", p_buf->index);
+		LOGD(g_debuglog, "p_buf->index = %d\n", p_buf->index);
 	//	CameraDevice->returnFrame(CameraDevice, p_buf->index);
 	//}
 
     // enquene buffer to input buffer quene
     
-	LOGD("ID = %d\n", input_buffer.id);
+	LOGD(g_debuglog, "ID = %d\n", input_buffer.id);
 	result = venc_device->ioctrl(venc_device, VENC_CMD_ENQUENE_INPUT_BUFFER, &input_buffer);
 
 	if(result < 0) {
@@ -268,10 +273,10 @@ CCapEncoder::CCapEncoder(void)
 	
 	m_alloc_parm.buffernum = 4;
 	
-	LOGD("cedarx_hardware_init");
+	LOGD(g_debuglog, "cedarx_hardware_init");
 	cedarx_hardware_init(0);
 	
-	LOGD("Codec version = %s", getCodecVision());
+	LOGD(g_debuglog, "Codec version = %s", getCodecVision());
 	
 	m_venc_device = cedarvEncInit();
 	m_venc_device->ioctrl(m_venc_device, VENC_CMD_BASE_CONFIG, &m_base_cfg);
@@ -279,11 +284,11 @@ CCapEncoder::CCapEncoder(void)
 	m_venc_device->ioctrl(m_venc_device, VENC_CMD_OPEN, 0);
 	m_venc_device->ioctrl(m_venc_device, VENC_CMD_HEADER_DATA, &m_header_data);
 	
-	LOGD("create encoder ok");
+	LOGD(g_debuglog, "create encoder ok");
 	
 	/* create source */
 	m_CameraDevice = CreateCamera(m_base_cfg.input_width, m_base_cfg.input_height);
-	LOGD("create camera ok");
+	LOGD(g_debuglog, "create camera ok");
 	
 	/* set camera source callback */
 	m_CameraDevice->setCameraDatacallback(m_CameraDevice, 
@@ -338,7 +343,7 @@ int CCapEncoder::Encode(void)
 		
 		if(result<0)
 		{
-			LOGV("enquene input buffer is empty");
+			LOGD(g_debuglog, "enquene input buffer is empty");
 			usleep(10*1000);
 			continue;
 		}
@@ -412,6 +417,13 @@ m_pRtmp(NULL),
 m_nFileBufSize(0),
 m_nCurPos(0)
 {
+#if LOG_FILE
+	time_t t = time(0);
+	char tmp[64];
+	strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S_log.txt", localtime(&t) ); //格式化输出.
+	g_debuglog = fopen(tmp, "w+");
+#endif
+
 	m_pFileBuf = new unsigned char[FILEBUFSIZE];
 	memset(m_pFileBuf,0,FILEBUFSIZE);
 	InitSockets();
@@ -443,22 +455,33 @@ CRTMPStream::~CRTMPStream(void)
 		free(g_avfifo->outbuf_);
 		delete g_avfifo;
 	}
-	
+	if(g_debuglog)
+		fclose(g_debuglog);
 }
 
 bool CRTMPStream::Connect(const char* url)
 {
-	if(RTMP_SetupURL(m_pRtmp, (char*)url)<0)
+	int ret;
+	LOGD(g_debuglog, "CRTMPStream::Connect start!.");
+	ret = RTMP_SetupURL(m_pRtmp, (char*)url);
+	if(ret < 0)
 	{
+		LOGD(g_debuglog, "RTMP_SetupURL error: %d.", ret);
 		return FALSE;
 	}
 	RTMP_EnableWrite(m_pRtmp);
-	if(RTMP_Connect(m_pRtmp, NULL)<0)
+	
+	ret = RTMP_Connect(m_pRtmp, NULL);
+	if(ret<0)
 	{
+		LOGD(g_debuglog, "RTMP_Connect error: %d.", ret);
 		return FALSE;
 	}
-	if(RTMP_ConnectStream(m_pRtmp,0)<0)
+	
+	ret = RTMP_ConnectStream(m_pRtmp,0);
+	if(ret<0)
 	{
+		LOGD(g_debuglog, "RTMP_ConnectStream error: %d.", ret);
 		return FALSE;
 	}
 	return TRUE;
@@ -474,7 +497,7 @@ void CRTMPStream::Close()
 	}
 }
 
-int CRTMPStream::SendPacket(unsigned int nPacketType,unsigned char *data,unsigned int size,unsigned int nTimestamp)
+int CRTMPStream::SendPacket(unsigned int nPacketType,unsigned char *data,unsigned int size,unsigned int nTimestamp, unsigned char type)
 {
 	if(m_pRtmp == NULL)
 	{
@@ -485,10 +508,10 @@ int CRTMPStream::SendPacket(unsigned int nPacketType,unsigned char *data,unsigne
 	RTMPPacket_Reset(&packet);
 	RTMPPacket_Alloc(&packet,size);
 	
-	packet.m_hasAbsTimestamp = 1;
+	packet.m_hasAbsTimestamp = 0;
 	packet.m_packetType = nPacketType;
 	packet.m_nChannel = 0x04;  
-	packet.m_headerType = RTMP_PACKET_SIZE_LARGE;  
+	packet.m_headerType = type; //RTMP_PACKET_SIZE_LARGE;  
 	packet.m_nTimeStamp = nTimestamp;  
 	packet.m_nInfoField2 = m_pRtmp->m_stream_id;
 	packet.m_nBodySize = size;
@@ -539,7 +562,7 @@ bool CRTMPStream::SendMetadata(LPRTMPMetadata lpMetaData)
 
 	int index = p-body;
 
-	SendPacket(RTMP_PACKET_TYPE_INFO,(unsigned char*)body,p-body,0);
+	SendPacket(RTMP_PACKET_TYPE_INFO,(unsigned char*)body,p-body,0, RTMP_PACKET_SIZE_LARGE);
 
 	int i = 0;
 	body[i++] = 0x17; // 1:keyframe  7:AVC
@@ -574,7 +597,7 @@ bool CRTMPStream::SendMetadata(LPRTMPMetadata lpMetaData)
 	memcpy(&body[i],lpMetaData->Pps,lpMetaData->nPpsLen);
 	i= i+lpMetaData->nPpsLen;
 
-	return SendPacket(RTMP_PACKET_TYPE_VIDEO,(unsigned char*)body,i,0);
+	return SendPacket(RTMP_PACKET_TYPE_VIDEO,(unsigned char*)body,i,0, RTMP_PACKET_SIZE_LARGE);
 
 }
 
@@ -610,7 +633,7 @@ bool CRTMPStream::SendH264Packet(unsigned char *data,unsigned int size,bool bIsK
 	// NALU data
 	memcpy(&body[i],data,size);
 
-	bool bRet = SendPacket(RTMP_PACKET_TYPE_VIDEO,body,i+size,nTimeStamp);
+	bool bRet = SendPacket(RTMP_PACKET_TYPE_VIDEO,body,i+size,nTimeStamp, RTMP_PACKET_SIZE_MEDIUM);
 
 	delete[] body;
 
@@ -658,25 +681,38 @@ bool CRTMPStream::SendCapEncode(void)
 	metaData.nHeight = height;
 	//metaData.nFrameRate = m_venc_cam_cxt->m_base_cfg.framerate;
 	metaData.nFrameRate = m_venc_cam_cxt->m_base_cfg.maxKeyInterval;
-	LOGD("metaData.nWidth is %d, metaData.nHeight is %d.\n", metaData.nWidth, metaData.nHeight);
+	LOGD(g_debuglog, "metaData.nWidth is %d, metaData.nHeight is %d.\n", metaData.nWidth, metaData.nHeight);
    
 	// 发送MetaData
 	SendMetadata(&metaData);
 
 	unsigned int tick = 0x00ff0000;
+	unsigned int cont = 0;
 	//unsigned int tick = 0;
 	//while(ReadOneNaluFromBuf(naluUnit))
 	while(get_next_slice(naluUnit))
 	{
-		if (tick >= 0x00fffff0)
-			tick = 0; 
+		//if (tick >= 0x00fffff0)
+		//	tick = 0; 
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
 		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
-		LOGD("naluUnit.size:%d, bKeyframe:%d, tick:%u.\n", naluUnit.size, bKeyframe, tick);
+		LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, tick:%u.\n", naluUnit.size, bKeyframe, tick);
 		
 		msleep(37);
 		tick +=40;
+		#if LOG_FILE
+		cont++;
+		//logファイルを新たに作る
+		if (cont > 2000){
+			fclose(g_debuglog);
+			time_t t = time(0);
+			char tmp[64];
+			strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S_log.txt", localtime(&t) ); //格式化输出.
+			g_debuglog = fopen(tmp, "w+");
+			cont = 0;
+		}
+		#endif //LOG_FILE
 	}
 
 	return TRUE;
@@ -731,7 +767,7 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
 		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
-		LOGD("naluUnit.size:%d, bKeyframe:%d, tick:%d.\n", naluUnit.size, bKeyframe, tick);
+		LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, tick:%d.\n", naluUnit.size, bKeyframe, tick);
 		
 		usleep(30*1000);
 		tick +=30;

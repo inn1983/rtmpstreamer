@@ -17,6 +17,11 @@ int main(int argc,char* argv[])
 	
 	CRTMPStream rtmpSender(bEncode);
 	bool bRet = rtmpSender.Connect(server);
+	if (bRet != TRUE){
+		rtmpSender.Close();
+		exit(0);
+	}
+		
 	printf("connect to rtmp server:%s.\n", server);
   
     //rtmpSender.SendH264File("E:\\video\\test.264");

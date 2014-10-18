@@ -128,7 +128,7 @@ private:
 	bool ReadOneNaluFromBuf_enc(NaluUnit &nalu);
 	bool ReadOneNaluFromBuf(NaluUnit &nalu);
 	// 发送数据
-	int SendPacket(unsigned int nPacketType,unsigned char *data,unsigned int size,unsigned int nTimestamp);
+	int SendPacket(unsigned int nPacketType,unsigned char *data,unsigned int size,unsigned int nTimestamp, unsigned char type);
 private:
 	RTMP* m_pRtmp;
 	unsigned char* m_pFileBuf;
