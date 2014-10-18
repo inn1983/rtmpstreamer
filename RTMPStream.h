@@ -11,6 +11,8 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 #include <amf.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/time.h>    
+#include <unistd.h>
 
 #include <deque>
 #include <cc++/thread.h>
@@ -41,6 +43,7 @@ typedef struct _NaluUnit
 	int type;
 	int size;
 	unsigned char *data;
+	unsigned long pts;
 }NaluUnit;
 
 typedef struct _RTMPMetadata
@@ -123,6 +126,8 @@ public:
 	bool SendH264File(const char *pFileName);
 	//
 	bool SendCapEncode(void);
+	
+	time_t m_starttime;
 private:
 	// 送缓存中读取一个NALU包
 	bool ReadOneNaluFromBuf_enc(NaluUnit &nalu);

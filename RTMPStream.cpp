@@ -27,6 +27,8 @@ AVfifo_t* g_avfifo; //グローバルfifo
 
 FILE* g_debuglog = NULL;
 
+long long g_starttime = 0;
+
 
 enum
 {
@@ -187,6 +189,7 @@ int get_next_slice(NaluUnit &nalu)
 	nalu.data = (unsigned char*)g_avfifo->outbuf_+4;
 	nalu.type = nalu.data[0]&0x1f;
 	nalu.size = s->len_-4;
+	nalu.pts = s->pts_/1000;
 
 	int rc = nalu.size;
 	slice_free(s);
@@ -233,7 +236,15 @@ int CameraSourceCallback(void *cookie,  void *data)
 	//input_buffer.addrvirC = buffer + size_y;
 
 	input_buffer.pts = 1000000 * (long long)p_buf->timestamp.tv_sec + (long long)p_buf->timestamp.tv_usec;
-	LOGD(g_debuglog, "pts = %ll", input_buffer.pts);
+	
+	//save starttime 
+	if (g_starttime == 0){
+		g_starttime = input_buffer.pts;
+		LOGD(g_debuglog, "g_starttime:%d", g_starttime);
+	}
+	input_buffer.pts -= g_starttime;
+	
+	LOGD(g_debuglog, "pts = %d", (unsigned int)input_buffer.pts);
 
 #if 1
 	if(input_buffer.addrphyY >=  (void*)0x40000000)
@@ -262,12 +273,12 @@ int CameraSourceCallback(void *cookie,  void *data)
 CCapEncoder::CCapEncoder(void)
 {
 	m_base_cfg.codectype = VENC_CODEC_H264;
-	m_base_cfg.framerate = 25;
+	m_base_cfg.framerate = 30;
 	m_base_cfg.input_width = 720;
 	m_base_cfg.input_height= 480;
 	m_base_cfg.dst_width = 720;
 	m_base_cfg.dst_height = 480;
-	m_base_cfg.maxKeyInterval = 25;
+	m_base_cfg.maxKeyInterval = 30;
 	m_base_cfg.inputformat = VENC_PIXEL_YUV420; //uv combined
 	m_base_cfg.targetbitrate = 3*1024*1024;
 	
@@ -334,7 +345,7 @@ int CCapEncoder::Encode(void)
 		
 		// FIXME: encode 需要消耗一定时间，这里不准确
 		//usleep(1000 * 1000 / m_base_cfg.maxKeyInterval);	// 25fps
-		msleep(37);	// 25fps
+		msleep(30);	// 30fps
 		
 		memset(&input_buffer, 0, sizeof(VencInputBuffer));
 		
@@ -696,13 +707,17 @@ bool CRTMPStream::SendCapEncode(void)
 		//	tick = 0; 
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
-		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
-		LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, tick:%u.\n", naluUnit.size, bKeyframe, tick);
-		
-		msleep(37);
-		tick +=40;
-		#if LOG_FILE
+		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
+		LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
 		cont++;
+		if (cont > 2000){
+			// 发送MetaData
+			SendMetadata(&metaData);
+			cont = 0;
+		}
+
+#if LOG_FILE
+		
 		//logファイルを新たに作る
 		if (cont > 2000){
 			fclose(g_debuglog);
@@ -712,7 +727,7 @@ bool CRTMPStream::SendCapEncode(void)
 			g_debuglog = fopen(tmp, "w+");
 			cont = 0;
 		}
-		#endif //LOG_FILE
+#endif //LOG_FILE
 	}
 
 	return TRUE;
