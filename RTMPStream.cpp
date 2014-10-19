@@ -189,7 +189,7 @@ int get_next_slice(NaluUnit &nalu)
 	nalu.data = (unsigned char*)g_avfifo->outbuf_+4;
 	nalu.type = nalu.data[0]&0x1f;
 	nalu.size = s->len_-4;
-	nalu.pts = s->pts_/1000;
+	nalu.pts = s->pts_/1000 + 0x00ff0000;
 
 	int rc = nalu.size;
 	slice_free(s);
@@ -239,12 +239,12 @@ int CameraSourceCallback(void *cookie,  void *data)
 	
 	//save starttime 
 	if (g_starttime == 0){
-		g_starttime = input_buffer.pts;
+		g_starttime = input_buffer.pts; //input_buffer.pts long long is 64bit
 		LOGD(g_debuglog, "g_starttime:%d", g_starttime);
 	}
-	input_buffer.pts -= g_starttime;
+	input_buffer.pts = input_buffer.pts - g_starttime;
 	
-	LOGD(g_debuglog, "pts = %d", (unsigned int)input_buffer.pts);
+	LOGD(g_debuglog, "pts = %lld", input_buffer.pts);
 
 #if 1
 	if(input_buffer.addrphyY >=  (void*)0x40000000)
@@ -712,7 +712,7 @@ bool CRTMPStream::SendCapEncode(void)
 		cont++;
 		if (cont > 2000){
 			// 发送MetaData
-			SendMetadata(&metaData);
+			//SendMetadata(&metaData);
 			cont = 0;
 		}
 
