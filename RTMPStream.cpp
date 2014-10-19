@@ -554,7 +554,7 @@ bool CRTMPStream::SendMetadata(LPRTMPMetadata lpMetaData)
 	p = put_byte(p, AMF_OBJECT );  
 	p = put_amf_string( p, "copyright" );  
 	p = put_byte(p, AMF_STRING );  
-	p = put_amf_string( p, "firehood" );  
+	p = put_amf_string( p, "inn" );  
 
 	p =put_amf_string( p, "width");
 	p =put_amf_double( p, lpMetaData->nWidth);
