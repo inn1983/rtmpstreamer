@@ -112,18 +112,18 @@ char * put_amf_double( char *c, double d )
 	return c+8;  
 }
 
-static slice_t *slice_alloc(const void *data, int len, int64_t pts)
+static slice_t *slice_alloc(const void *data, int len, int64_t pts, unsigned char type)
 {
 	slice_t *ns = (slice_t *)malloc(sizeof(slice_t));
 	ns->data_ = malloc(len);
 	memcpy(ns->data_, data, len);
 	ns->pts_ = pts;
 	ns->len_ = len;
-
+	ns->pkt_type = type;
 	return ns;
 }
 
-static slice_t *slice_alloc(const void *p1, int l1, const void *p2, int l2, int64_t pts)
+static slice_t *slice_alloc(const void *p1, int l1, const void *p2, int l2, int64_t pts, unsigned char type)
 {
 	slice_t *ns = (slice_t*)malloc(sizeof(slice_t));
 	ns->data_ = malloc(l1+l2);
@@ -131,6 +131,7 @@ static slice_t *slice_alloc(const void *p1, int l1, const void *p2, int l2, int6
 	memcpy((unsigned char*)ns->data_ + l1, p2, l2);
 	ns->pts_ = pts;
 	ns->len_ = l1+l2;
+	ns->pkt_type = type;
 	return ns;
 }
 
@@ -170,15 +171,33 @@ static void uyvy_nv12(const unsigned char *puyvy, unsigned char *pnv12, int widt
 int get_next_slice(NaluUnit &nalu)
 {
 	g_avfifo->cs_fifo_.enter();
-	while (g_avfifo->fifo_.empty()) {
+	while (g_avfifo->avc_fifo_.empty() ) {
 		g_avfifo->cs_fifo_.leave();
 		g_avfifo->sem_fifo_.wait();
 		g_avfifo->cs_fifo_.enter();
 	}
+	
+	slice_t *s;
+	slice_t *aac_s;
+	slice_t *avc_s;
 
-	slice_t *s = g_avfifo->fifo_.front();
-	g_avfifo->fifo_.pop_front();
-	fprintf(stderr, "fifo size is %d.\n", g_avfifo->fifo_.size());
+	if (g_avfifo->aac_fifo_.empty() != true){
+		avc_s = g_avfifo->avc_fifo_.front();
+		aac_s = g_avfifo->aac_fifo_.front();
+		if(aac_s->pts_ < avc_s->pts_){
+			g_avfifo->aac_fifo_.pop_front();
+			s = aac_s;
+		}else {
+			g_avfifo->avc_fifo_.pop_front();
+			s = avc_s;
+		}
+	}
+	else {
+		s = g_avfifo->avc_fifo_.front();
+		g_avfifo->avc_fifo_.pop_front();
+	}
+	
+	fprintf(stderr, "avc_fifo_ size is %d.\n", g_avfifo->avc_fifo_.size());
 
 	if (s->len_ > g_avfifo->outbuf_size_) {
 		g_avfifo->outbuf_size_ = (s->len_ + 4095)/4096*4096;
@@ -186,10 +205,18 @@ int get_next_slice(NaluUnit &nalu)
 	}
 
 	memcpy(g_avfifo->outbuf_, s->data_, s->len_);
-	nalu.data = (unsigned char*)g_avfifo->outbuf_+4;
-	nalu.type = nalu.data[0]&0x1f;
-	nalu.size = s->len_-4;
-	nalu.pts = s->pts_/1000 + 0x00ff0000;
+	
+	if (s->pkt_type == RTMP_PACKET_TYPE_VIDEO){
+		nalu.data = (unsigned char*)g_avfifo->outbuf_+4;
+		nalu.frame_type = nalu.data[0]&0x1f;
+		nalu.size = s->len_-4;
+	}
+	else {
+		nalu.data = (unsigned char*)g_avfifo->outbuf_+7;
+		nalu.size = s->len_-7;
+	}
+	nalu.pkt_type = s->pkt_type;
+	nalu.pts = s->pts_/1000;
 
 	int rc = nalu.size;
 	slice_free(s);
@@ -226,23 +253,20 @@ int CameraSourceCallback(void *cookie,  void *data)
 	}while(result !=0 );
 	
 	uyvy_nv12( (unsigned char*)buffer, input_buffer.addrvirY, 720, 480);
-	
-	//input_buffer.id = p_buf->index;
-	//input_buffer.addrphyY = p_buf->m.offset;
-	//input_buffer.addrphyC = p_buf->m.offset + size_y;
 
-	//LOGD("buffer address is %x", buffer);
-	//input_buffer.addrvirY = buffer;
-	//input_buffer.addrvirC = buffer + size_y;
-
-	input_buffer.pts = 1000000 * (long long)p_buf->timestamp.tv_sec + (long long)p_buf->timestamp.tv_usec;
+	//input_buffer.pts = 1000000 * (long long)p_buf->timestamp.tv_sec + (long long)p_buf->timestamp.tv_usec;
 	
 	//save starttime 
-	if (g_starttime == 0){
-		g_starttime = input_buffer.pts; //input_buffer.pts long long is 64bit
-		LOGD(g_debuglog, "g_starttime:%d", g_starttime);
-	}
-	input_buffer.pts = input_buffer.pts - g_starttime;
+	//if (g_starttime == 0){
+	//	g_starttime = input_buffer.pts;	//input_buffer.pts long long is 64bit
+	//	LOGD(g_debuglog, "g_starttime:%d", g_starttime);
+	//}
+	//input_buffer.pts = input_buffer.pts - g_starttime ;
+	struct timeval tv;
+	struct timezone tz;
+	gettimeofday (&tv, &tz);
+	
+	input_buffer.pts = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
 	
 	LOGD(g_debuglog, "pts = %lld", input_buffer.pts);
 
@@ -379,22 +403,22 @@ int CCapEncoder::Encode(void)
 		if (m_output_buffer.size0 > 0) {
 			ost::MutexLock al(g_avfifo->cs_fifo_);
 			
-			if (g_avfifo->fifo_.size() > 200) {
+			if (g_avfifo->avc_fifo_.size() > 200) {
 				fprintf(stderr, "fifo overflow ...\n");
 				// 当积累的太多时清除fifo
-				while (!g_avfifo->fifo_.empty()) {
-					slice_t *s = g_avfifo->fifo_.front();
-					g_avfifo->fifo_.pop_front();
+				while (!g_avfifo->avc_fifo_.empty()) {
+					slice_t *s = g_avfifo->avc_fifo_.front();
+					g_avfifo->avc_fifo_.pop_front();
 					slice_free(s);
 					fprintf(stderr, "E");
 				}
 			}
 		
 			if(m_output_buffer.size1 > 0){
-				g_avfifo->fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.ptr1, m_output_buffer.size1, m_output_buffer.pts));
+				g_avfifo->avc_fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.ptr1, m_output_buffer.size1, m_output_buffer.pts, RTMP_PACKET_TYPE_VIDEO));
 			}
 			else{
-				g_avfifo->fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts));
+				g_avfifo->avc_fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts, RTMP_PACKET_TYPE_VIDEO));
 			
 			}
 			g_avfifo->sem_fifo_.post();
@@ -412,16 +436,216 @@ void CCapEncoder::run()
 	Encode();
 }
 
-
-#if 0
-int CCapEncoder::ReturnBitstream(void)
+CAlsaEncoder::CAlsaEncoder()
 {
-	int result = 0;
-	result = m_venc_device->ioctrl(m_venc_device, VENC_CMD_RETURN_BITSTREAM, &m_output_buffer);
+	m_buffer_frames =  128;
+	//m_rate = 11025;
+	m_rate = 44100;
+	m_format = SND_PCM_FORMAT_S16_LE;
+	m_nChannels = 1;
+	m_nPCMBitSize = 16;
 	
-	return result;
+	//AlsaInit();
+	FaacInit();
+	
+	//struct timeval tv;
+    //struct timezone tz;
+    //gettimeofday (&tv, &tz);
+	//m_starttime = tv.tv_sec;
+	
+	m_mstart = 1;
+	start(); //start thread
+	
 }
+
+
+CAlsaEncoder::~CAlsaEncoder()
+{   
+	m_mstart = 0;
+	join();
+	// (4) Close FAAC engine
+	int nRet;
+    nRet = faacEncClose(m_hEncoder);
+	delete[] m_pbPCMBuffer;
+    delete[] m_pbAACBuffer;
+    fclose(m_fpWavIn);
+	fclose(m_fpAacOut);
+}
+
+
+int CAlsaEncoder::AlsaInit(void)
+{
+#if 0
+	int i;
+	int err;
+	if ((err = snd_pcm_open (&capture_handle, argv[1], SND_PCM_STREAM_CAPTURE, 0)) < 0) {
+		fprintf (stderr, "cannot open audio device %s (%s)\n", 
+				argv[1],
+				snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "audio interface opened\n");
+		   
+	if ((err = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
+		fprintf (stderr, "cannot allocate hardware parameter structure (%s)\n",
+             snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "hw_params allocated\n");
+	
+	if ((err = snd_pcm_hw_params_any (capture_handle, hw_params)) < 0) {
+		fprintf (stderr, "cannot initialize hardware parameter structure (%s)\n",
+             snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "hw_params initialized\n");
+	
+	if ((err = snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
+		fprintf (stderr, "cannot set access type (%s)\n",
+             snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "hw_params access setted\n");
+	
+	if ((err = snd_pcm_hw_params_set_format (capture_handle, hw_params, format)) < 0) {
+		fprintf (stderr, "cannot set sample format (%s)\n",
+             snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "hw_params format setted\n");
+	
+	if ((err = snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &rate, 0)) < 0) {
+		fprintf (stderr, "cannot set sample rate (%s)\n",
+             snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "hw_params rate setted\n");
+ 
+	if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) {
+		fprintf (stderr, "cannot set channel count (%s)\n",
+             snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "hw_params channels setted\n");
+	
+	if ((err = snd_pcm_hw_params (capture_handle, hw_params)) < 0) {
+		fprintf (stderr, "cannot set parameters (%s)\n",
+             snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "hw_params setted\n");
+	
+	snd_pcm_hw_params_free (hw_params);
+	
+	fprintf(stdout, "hw_params freed\n");
+	
+	if ((err = snd_pcm_prepare (capture_handle)) < 0) {
+		fprintf (stderr, "cannot prepare audio interface for use (%s)\n",
+             snd_strerror (err));
+		exit (1);
+	}
+	fprintf(stdout, "audio interface prepared\n");
+
+	return 0;
 #endif
+}
+
+int CAlsaEncoder::FaacInit(void)
+{
+	int nRet;
+	m_fpWavIn = fopen("./WavInFifo.wav", "rb");	//input fifo
+	if (m_fpWavIn) 
+		printf("WavInFifo is open!!\n");
+		
+	m_fpAacOut =  fopen("./dump.aac", "wb");
+	
+	// (1) Open FAAC engine
+	m_hEncoder = faacEncOpen(m_rate, m_nChannels, &m_nInputSamples, &m_nMaxOutputBytes);//初始化aac句柄，同时获取最大输入样本，及编码所需最小字节
+	
+	m_nMaxInputBytes=m_nInputSamples * m_nPCMBitSize / 8;//计算最大输入字节,跟据最大输入样本数
+	printf("m_nInputSamples:%d m_nMaxInputBytes:%d m_nMaxOutputBytes:%d\n", m_nInputSamples, m_nMaxInputBytes,m_nMaxOutputBytes);
+    
+	if(m_hEncoder == NULL)
+    {
+        printf("[ERROR] Failed to call faacEncOpen()\n");
+        return -1;
+    }
+	
+	m_pbPCMBuffer = new BYTE [m_nMaxInputBytes];
+	m_pbAACBuffer = new BYTE [m_nMaxOutputBytes];
+	
+	// (2.1) Get current encoding configuration
+	m_pConfiguration = faacEncGetCurrentConfiguration(m_hEncoder);//获取配置结构指针
+	m_pConfiguration->inputFormat = FAAC_INPUT_16BIT;
+	m_pConfiguration->outputFormat=1;
+	m_pConfiguration->useTns=true;
+	m_pConfiguration->useLfe=false;
+	m_pConfiguration->aacObjectType=LOW;
+	m_pConfiguration->shortctl=SHORTCTL_NORMAL;
+	m_pConfiguration->quantqual=60;
+	m_pConfiguration->bandWidth=0;
+	m_pConfiguration->bitRate=0;
+	
+	// (2.2) Set encoding configuration
+	nRet = faacEncSetConfiguration(m_hEncoder, m_pConfiguration);//设置配置，根据不同设置，耗时不一样
+	
+	return 0;
+}
+
+int CAlsaEncoder::Encode(void)
+{
+	//snd_pcm_readi(capture_handle, buffer, buffer_frames);
+	int nBytesRead;
+	int nRet;
+	int nInputSamples;
+	
+	faacEncGetDecoderSpecificInfo(m_hEncoder, &m_enc_spec_buf, (long unsigned int*)&m_enc_spec_len);
+	while(m_mstart){
+		
+		long long timestamp;
+		struct timeval tv;
+		struct timezone tz;
+		gettimeofday (&tv, &tz);
+	
+		timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
+		LOGD(g_debuglog, "(tv.tv_sec - g_starttime)*1000000 + tv.tv_usec is %lld", timestamp);
+		
+		// 读入的实际字节数，最大不会超过nPCMBufferSize，一般只有读到文件尾时才不是m_nPCMBufferSize
+        nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+		// 输入样本数，用实际读入字节数计算
+		nInputSamples = nBytesRead / (m_nPCMBitSize / 8);
+		// (3) Encode
+		nRet = faacEncEncode(m_hEncoder, (int*) m_pbPCMBuffer, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
+		//usleep(70*1000);
+		if (nRet > 0) {
+			ost::MutexLock al(g_avfifo->cs_fifo_);
+			
+			if (g_avfifo->aac_fifo_.size() > 200) {
+				fprintf(stderr, "fifo overflow ...\n");
+				// 当积累的太多时清除fifo
+				while (!g_avfifo->aac_fifo_.empty()) {
+					slice_t *s = g_avfifo->aac_fifo_.front();
+					g_avfifo->aac_fifo_.pop_front();
+					slice_free(s);
+					fprintf(stderr, "E");
+				}
+			}
+			
+			g_avfifo->aac_fifo_.push_back(slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO));
+			fprintf(stderr, "aac fifo push!! nRet is %d.\n", nRet);
+			//g_avfifo->sem_fifo_.post();
+			
+			fwrite(m_pbAACBuffer, 1, nRet, m_fpAacOut);
+		}		
+	}
+	
+}
+
+
+void CAlsaEncoder::run()
+{
+	Encode();
+}
 
 CRTMPStream::CRTMPStream(bool bEncode):
 m_pRtmp(NULL),
@@ -438,17 +662,25 @@ m_nCurPos(0)
 	m_pFileBuf = new unsigned char[FILEBUFSIZE];
 	memset(m_pFileBuf,0,FILEBUFSIZE);
 	InitSockets();
-	m_pRtmp = RTMP_Alloc();  
+	m_pRtmp = RTMP_Alloc();
 	RTMP_Init(m_pRtmp);
 	m_venc_cam_cxt = NULL;
+	m_alsa_enc = NULL;
 	
-	if(bEncode)
+	if(bEncode){
 		m_venc_cam_cxt = new CCapEncoder();
+		m_alsa_enc = new CAlsaEncoder();
+	}
+		
 	
 	g_avfifo = new AVfifo_t;
-
 	g_avfifo->outbuf_ = malloc(128*2048);
 	g_avfifo->outbuf_size_ = 128*2048;
+	
+	struct timeval tv;
+    struct timezone tz;
+    gettimeofday (&tv, &tz);
+	g_starttime = tv.tv_sec;
 }
 
 CRTMPStream::~CRTMPStream(void)
@@ -461,6 +693,9 @@ CRTMPStream::~CRTMPStream(void)
 	
 	if(m_venc_cam_cxt)
 		delete m_venc_cam_cxt;
+	
+	if(m_alsa_enc)
+		delete m_alsa_enc;
 	
 	if(g_avfifo){
 		free(g_avfifo->outbuf_);
@@ -528,7 +763,7 @@ int CRTMPStream::SendPacket(unsigned int nPacketType,unsigned char *data,unsigne
 	packet.m_nBodySize = size;
 	memcpy(packet.m_body,data,size);
 	
-	fprintf(stderr, "packet.m_hasAbsTimestamp is %d!!\n", packet.m_hasAbsTimestamp);
+	//fprintf(stderr, "packet.m_hasAbsTimestamp is %d!!\n", packet.m_hasAbsTimestamp);
 	int nRet = RTMP_SendPacket(m_pRtmp,&packet,0);
 
 	RTMPPacket_Free(&packet);
@@ -608,7 +843,11 @@ bool CRTMPStream::SendMetadata(LPRTMPMetadata lpMetaData)
 	memcpy(&body[i],lpMetaData->Pps,lpMetaData->nPpsLen);
 	i= i+lpMetaData->nPpsLen;
 
-	return SendPacket(RTMP_PACKET_TYPE_VIDEO,(unsigned char*)body,i,0, RTMP_PACKET_SIZE_LARGE);
+	SendPacket(RTMP_PACKET_TYPE_VIDEO,(unsigned char*)body,i,0, RTMP_PACKET_SIZE_LARGE);
+	
+	SendAacSpec();
+	
+	return 0;
 
 }
 
@@ -703,12 +942,20 @@ bool CRTMPStream::SendCapEncode(void)
 	//while(ReadOneNaluFromBuf(naluUnit))
 	while(get_next_slice(naluUnit))
 	{
-		//if (tick >= 0x00fffff0)
-		//	tick = 0; 
-		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
-		// 发送H264数据帧
-		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
-		LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
+		if (naluUnit.pkt_type == RTMP_PACKET_TYPE_VIDEO){
+			bool bKeyframe  = (naluUnit.frame_type == 0x05) ? TRUE : FALSE;
+			// 发送H264数据帧
+			SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
+			LOGD(g_debuglog, "RTMP_PACKET_TYPE_VIDEO send.");
+			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
+		}
+		else {
+			// 发送AAC数据
+			SendAacPacket(naluUnit.data, naluUnit.size, naluUnit.pts);
+			LOGD(g_debuglog, "RTMP_PACKET_TYPE_AUDIO send.");
+			LOGD(g_debuglog, "naluUnit.pts:%u.", naluUnit.pts);
+		}
+		
 		cont++;
 		if (cont > 2000){
 			// 发送MetaData
@@ -717,7 +964,6 @@ bool CRTMPStream::SendCapEncode(void)
 		}
 
 #if LOG_FILE
-		
 		//logファイルを新たに作る
 		if (cont > 2000){
 			fclose(g_debuglog);
@@ -733,6 +979,79 @@ bool CRTMPStream::SendCapEncode(void)
 	return TRUE;
 }
 
+int CRTMPStream::SendAacPacket(unsigned char *data, unsigned int size, unsigned long pts)
+{
+/*
+	long timestamp;
+	
+	struct timeval tv;
+    struct timezone tz;
+    gettimeofday (&tv, &tz);
+	
+	timestamp = (tv.tv_sec*1000000 + tv.tv_usec - m_starttime)/1000;
+*/	
+	RTMPPacket packet;
+	RTMPPacket_Reset(&packet);
+	RTMPPacket_Alloc(&packet,size+2);
+	
+	/*AF 00 + AAC RAW data*/
+	packet.m_body[0] = 0xAE;
+	packet.m_body[1] = 0x01;
+	memcpy(&packet.m_body[2],data, size);
+	
+	packet.m_packetType = RTMP_PACKET_TYPE_AUDIO;
+    packet.m_nBodySize = size+2;
+    packet.m_nChannel = 0x04;
+    packet.m_nTimeStamp = pts;//timestamp;
+    packet.m_headerType = RTMP_PACKET_SIZE_MEDIUM;
+    packet.m_nInfoField2 = m_pRtmp->m_stream_id;
+	
+	fprintf(stderr, "packet.m_nTimeStamp is %d.\n", packet.m_nTimeStamp);
+	fprintf(stderr, "pts is %d.\n", pts);
+	int nRet = RTMP_SendPacket(m_pRtmp,&packet,0);
+	
+	RTMPPacket_Free(&packet);
+
+	return 0;
+}
+
+int CRTMPStream::SendAacSpec(void)
+{
+	
+	RTMPPacket packet;
+	RTMPPacket_Reset(&packet);
+	RTMPPacket_Alloc(&packet,m_alsa_enc->m_enc_spec_len+2);
+	
+	//unsigned char debugbuf[20];
+	
+	/*AF 00 + AAC RAW data*/
+	packet.m_body[0] = 0xAE;
+	packet.m_body[1] = 0x00;
+	memcpy(&packet.m_body[2],m_alsa_enc->m_enc_spec_buf, m_alsa_enc->m_enc_spec_len); /*spec_buf是AAC sequence header数据*/
+	packet.m_body[2] = 0x11;
+	packet.m_body[3] = 0x88;
+	
+	packet.m_packetType = RTMP_PACKET_TYPE_AUDIO;
+    packet.m_nBodySize = m_alsa_enc->m_enc_spec_len+2;
+    packet.m_nChannel = 0x04;
+    packet.m_nTimeStamp = 0;
+    packet.m_hasAbsTimestamp = 0;
+    packet.m_headerType = RTMP_PACKET_SIZE_LARGE;
+    packet.m_nInfoField2 = m_pRtmp->m_stream_id;
+	
+	//memcpy(&debugbuf[0],m_alsa_enc->m_enc_spec_buf, m_alsa_enc->m_enc_spec_len);
+	//debugbuf[m_alsa_enc->m_enc_spec_len+1] = '\0';
+	fprintf(stderr, "m_alsa_enc->m_enc_spec_len is 0x%x!!\n", m_alsa_enc->m_enc_spec_len);
+	fprintf(stderr, "packet.m_body[2] is 0x%x!!\n", packet.m_body[2]);
+	fprintf(stderr, "packet.m_body[3] is 0x%x!!\n", packet.m_body[3]);
+	
+	/*调用发送接口*/
+    int nRet = RTMP_SendPacket(m_pRtmp,&packet,0);
+	RTMPPacket_Free(&packet);
+	
+	return 0;
+	
+}
 bool CRTMPStream::SendH264File(const char *pFileName)
 {
 	if(pFileName == NULL)
@@ -779,7 +1098,7 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 	unsigned int tick = 0;
 	while(ReadOneNaluFromBuf(naluUnit))
 	{
-		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
+		bool bKeyframe  = (naluUnit.frame_type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
 		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,tick);
 		LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, tick:%d.\n", naluUnit.size, bKeyframe, tick);
@@ -793,7 +1112,7 @@ bool CRTMPStream::SendH264File(const char *pFileName)
 
 bool CRTMPStream::ReadOneNaluFromBuf_enc(NaluUnit &nalu)
 {
-	int i = m_nCurPos;
+	unsigned int i = m_nCurPos;
 	while(i < m_venc_cam_cxt->m_header_data.length)
 	{
 		if(m_venc_cam_cxt->m_header_data.bufptr[i++] == 0x00 &&
@@ -821,7 +1140,7 @@ bool CRTMPStream::ReadOneNaluFromBuf_enc(NaluUnit &nalu)
 			{
 				nalu.size = (pos-4)-i;
 			}
-			nalu.type = m_venc_cam_cxt->m_header_data.bufptr[i]&0x1f;
+			nalu.frame_type = m_venc_cam_cxt->m_header_data.bufptr[i]&0x1f;
 			nalu.data = &m_venc_cam_cxt->m_header_data.bufptr[i];
 
 			m_nCurPos = pos-4;
@@ -861,7 +1180,7 @@ bool CRTMPStream::ReadOneNaluFromBuf(NaluUnit &nalu)
 			{
 				nalu.size = (pos-4)-i;
 			}
-			nalu.type = m_pFileBuf[i]&0x1f;
+			nalu.frame_type = m_pFileBuf[i]&0x1f;
 			nalu.data = &m_pFileBuf[i];
 
 			m_nCurPos = pos-4;

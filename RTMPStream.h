@@ -25,6 +25,9 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 //#include "water_mark.h"
 #include "cedarv_osal_linux.h"
 
+#include <alsa/asoundlib.h>
+#include <faac.h>
+
 #define FILEBUFSIZE (1024 * 1024 * 10)       //  10M
 
 // 描述一个 h264 slice
@@ -33,6 +36,7 @@ typedef struct slice_t
 	void *data_;
 	int len_;
 	int64_t pts_;
+	unsigned char pkt_type;
 } slice_t;
 
 typedef std::deque<slice_t*> SLICES;
@@ -40,7 +44,8 @@ typedef std::deque<slice_t*> SLICES;
 // NALU单元
 typedef struct _NaluUnit
 {
-	int type;
+	int frame_type;
+	unsigned char pkt_type;
 	int size;
 	unsigned char *data;
 	unsigned long pts;
@@ -70,7 +75,8 @@ typedef struct _RTMPMetadata
 
 typedef struct avfifo
 {	
-	SLICES fifo_;		// 用于缓冲
+	SLICES avc_fifo_;		// 用于缓冲
+	SLICES aac_fifo_;		// 用于缓冲
 	ost::Mutex cs_fifo_;	
 	ost::Semaphore sem_fifo_;
 	
@@ -105,7 +111,45 @@ private:
 	int m_mstart;
 };
 
+class CAlsaEncoder : ost::Thread
+{
+public:
+	CAlsaEncoder(void);
+	~CAlsaEncoder(void);
+	int AlsaInit(void);
+	int FaacInit(void);
+	
+	int Encode(void);
+	
+	unsigned char* m_enc_spec_buf;
+	int m_enc_spec_len;
+	
+	time_t m_starttime;
 
+private:
+	void run();
+	int m_mstart;
+	int m_buffer_frames;
+	unsigned int m_rate;
+	snd_pcm_t *m_capture_handle;
+	snd_pcm_hw_params_t *m_hw_params;
+	snd_pcm_format_t m_format;
+	int m_nChannels;
+	
+	FILE* m_fpWavIn;
+	FILE* m_fpAacOut;
+	
+	faacEncHandle m_hEncoder;		//aac handler
+	faacEncConfigurationPtr m_pConfiguration;//aac设置指针
+	unsigned char* m_pbPCMBuffer;
+    unsigned char* m_pbAACBuffer;
+	//unsigned long m_nPCMBufferSize;
+	unsigned long m_nInputSamples;
+	unsigned long m_nMaxInputBytes;
+	unsigned long m_nMaxOutputBytes;
+	unsigned char m_nPCMBitSize;
+	
+};
 
 
 class CRTMPStream
@@ -126,8 +170,10 @@ public:
 	bool SendH264File(const char *pFileName);
 	//
 	bool SendCapEncode(void);
+	int SendAacSpec(void);
+	int SendAacPacket(unsigned char *data, unsigned int size, unsigned long pts);
 	
-	time_t m_starttime;
+	//time_t m_starttime;
 private:
 	// 送缓存中读取一个NALU包
 	bool ReadOneNaluFromBuf_enc(NaluUnit &nalu);
@@ -141,6 +187,7 @@ private:
 	unsigned int  m_nCurPos;
 	AVfifo_t m_avfifo; 
 	CCapEncoder* m_venc_cam_cxt;
+	CAlsaEncoder* m_alsa_enc;
 };
 
 #endif
