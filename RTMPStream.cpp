@@ -623,12 +623,13 @@ int CAlsaEncoder::Encode(void)
 		//LOGD(g_debuglog, "(tv.tv_sec - g_starttime)*1000000 + tv.tv_usec is %lld", timestamp);
 		
 		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
-        nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+        //nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+		nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+		
+		LOGD(g_debuglog, "nBytesRead:%d", nBytesRead);
 		cont++;
 		if (cont > 5) en = true;
-		
-		LOGD(g_debuglog, "CAlsaEncoder::Encode()");
-
+	
 		if(en)
 		{
 			ost::MutexLock al(g_ptsfifo->cs_fifo_);
@@ -646,7 +647,7 @@ int CAlsaEncoder::Encode(void)
 		// (3) Encode
 		nRet = faacEncEncode(m_hEncoder, (int*) m_pbPCMBuffer, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
 		//usleep(70*1000);
-		if (nRet > 0) {
+		if (nRet > 0 && en) {
 			ost::MutexLock al(g_av_map->cs_map_);
 			
 			//g_avfifo->aac_fifo_.push_back(slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO));
@@ -657,6 +658,8 @@ int CAlsaEncoder::Encode(void)
 			
 			fwrite(m_pbAACBuffer, 1, nRet, m_fpAacOut);
 		}
+		
+		usleep(19*1000);
 		//else {
 			//先保存したptsを捨てる
 			//LOGD(g_debuglog, "aac map is not insert!!nRet is %d", nRet);
@@ -976,7 +979,7 @@ bool CRTMPStream::SendCapEncode(void)
 		if (naluUnit.pkt_type == RTMP_PACKET_TYPE_VIDEO){
 			bool bKeyframe  = (naluUnit.frame_type == 0x05) ? TRUE : FALSE;
 			// 发送H264数据帧
-			//SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
+			SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_VIDEO send.");
 			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
 		}
