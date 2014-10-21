@@ -23,7 +23,9 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 
 
 
-AVfifo_t* g_avfifo; //グローバルfifo
+//AVfifo_t* g_avfifo; //グローバルfifo
+AVmap_t* g_av_map;
+TimstampFifo_t* g_ptsfifo;
 
 FILE* g_debuglog = NULL;
 
@@ -170,49 +172,56 @@ static void uyvy_nv12(const unsigned char *puyvy, unsigned char *pnv12, int widt
 
 int get_next_slice(NaluUnit &nalu)
 {
-	g_avfifo->cs_fifo_.enter();
-	while (g_avfifo->avc_fifo_.empty() ) {
-		g_avfifo->cs_fifo_.leave();
-		g_avfifo->sem_fifo_.wait();
-		g_avfifo->cs_fifo_.enter();
-	}
+	g_ptsfifo->cs_fifo_.enter();
+	LOGD(g_debuglog, "g_ptsfifo->cs_fifo_.enter()");
 	
+	while (g_ptsfifo->fifo_.empty() ) {
+		g_ptsfifo->cs_fifo_.leave();
+		g_ptsfifo->sem_fifo_.wait();
+		g_ptsfifo->cs_fifo_.enter();
+	}
+
 	slice_t *s;
-	slice_t *aac_s;
-	slice_t *avc_s;
-
-	if (g_avfifo->aac_fifo_.empty() != true){
-		avc_s = g_avfifo->avc_fifo_.front();
-		aac_s = g_avfifo->aac_fifo_.front();
-		if(aac_s->pts_ < avc_s->pts_){
-			g_avfifo->aac_fifo_.pop_front();
-			s = aac_s;
-		}else {
-			g_avfifo->avc_fifo_.pop_front();
-			s = avc_s;
-		}
-	}
-	else {
-		s = g_avfifo->avc_fifo_.front();
-		g_avfifo->avc_fifo_.pop_front();
-	}
+	long long pts = g_ptsfifo->fifo_.front();
+	g_ptsfifo->fifo_.pop_front();
+	LOGD(g_debuglog, "g_ptsfifo->fifo_.front():%lld.", pts);
 	
-	fprintf(stderr, "avc_fifo_ size is %d.\n", g_avfifo->avc_fifo_.size());
+	g_ptsfifo->cs_fifo_.leave();
+	LOGD(g_debuglog, "g_ptsfifo->cs_fifo_.leave()");
+	
+	g_av_map->cs_map_.enter();
+	std::map<long long, slice_t*>::iterator it;
+	it = g_av_map->map_.find(pts);
+	
+	while(it == g_av_map->map_.end())
+	{
+		g_av_map->cs_map_.leave();
+		LOGD(g_debuglog, "g_av_map->cs_map_.leave()");
+		g_av_map->sem_map_.wait();
+		LOGD(g_debuglog, "g_av_map->sem_map_.wait()");
+		g_av_map->cs_map_.enter();
+		LOGD(g_debuglog, "g_av_map->cs_map_.enter()");
+		it = g_av_map->map_.find(pts);
+	}
+	LOGD(g_debuglog, "g_av_map->cs_map_.enter()");
+	s = it->second;
 
-	if (s->len_ > g_avfifo->outbuf_size_) {
-		g_avfifo->outbuf_size_ = (s->len_ + 4095)/4096*4096;
-		g_avfifo->outbuf_ = realloc(g_avfifo->outbuf_, g_avfifo->outbuf_size_);
+	//fprintf(stderr, "avc_fifo_ size is %d.\n", g_avfifo->avc_fifo_.size());
+
+	if (s->len_ > g_av_map->outbuf_size_) {
+		g_av_map->outbuf_size_ = (s->len_ + 4095)/4096*4096;
+		g_av_map->outbuf_ = realloc(g_av_map->outbuf_, g_av_map->outbuf_size_);
 	}
 
-	memcpy(g_avfifo->outbuf_, s->data_, s->len_);
+	memcpy(g_av_map->outbuf_, s->data_, s->len_);
 	
 	if (s->pkt_type == RTMP_PACKET_TYPE_VIDEO){
-		nalu.data = (unsigned char*)g_avfifo->outbuf_+4;
+		nalu.data = (unsigned char*)g_av_map->outbuf_+4;
 		nalu.frame_type = nalu.data[0]&0x1f;
 		nalu.size = s->len_-4;
 	}
 	else {
-		nalu.data = (unsigned char*)g_avfifo->outbuf_+7;
+		nalu.data = (unsigned char*)g_av_map->outbuf_+7;
 		nalu.size = s->len_-7;
 	}
 	nalu.pkt_type = s->pkt_type;
@@ -220,8 +229,11 @@ int get_next_slice(NaluUnit &nalu)
 
 	int rc = nalu.size;
 	slice_free(s);
+	g_av_map->map_.erase(it);	//mapから要素を削除
 
-	g_avfifo->cs_fifo_.leave();
+
+	g_av_map->cs_map_.leave();
+	LOGD(g_debuglog, "g_av_map->cs_map_.leave()");
 
 	return rc;
 }
@@ -236,10 +248,25 @@ int CameraSourceCallback(void *cookie,  void *data)
 	VencInputBuffer input_buffer;
 	int result = 0;
 	//int has_alloc_buffer = 0;
-	
+	//get timestamp 
+	struct timeval tv;
+	struct timezone tz;
+	long long timestamp = 0;
+	LOGD(g_debuglog, "CameraSourceCallback()!!");
 
+	if(true)
+	{
+		ost::MutexLock al(g_ptsfifo->cs_fifo_);
+		LOGD(g_debuglog, "CameraSourceCallback()!!");
+		gettimeofday (&tv, &tz);
+		LOGD(g_debuglog, "CameraSourceCallback()!!");
+		timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
+		g_ptsfifo->fifo_.push_back(timestamp);
+		LOGD(g_debuglog, "avc pts push:%lld", timestamp);
+	}
+	
 	struct v4l2_buffer *p_buf = (struct v4l2_buffer *)data;
-	v4l2_mem_map_t* p_v4l2_mem_map = GetMapmemAddress(getV4L2ctx(CameraDevice));	
+	v4l2_mem_map_t* p_v4l2_mem_map = GetMapmemAddress(getV4L2ctx(CameraDevice));
 
 	void *buffer = (void *)p_v4l2_mem_map->mem[p_buf->index];
 	int size_y = venc_cam_cxt->m_base_cfg.input_width*venc_cam_cxt->m_base_cfg.input_height; 
@@ -262,13 +289,7 @@ int CameraSourceCallback(void *cookie,  void *data)
 	//	LOGD(g_debuglog, "g_starttime:%d", g_starttime);
 	//}
 	//input_buffer.pts = input_buffer.pts - g_starttime ;
-	struct timeval tv;
-	struct timezone tz;
-	gettimeofday (&tv, &tz);
-	
-	input_buffer.pts = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
-	
-	LOGD(g_debuglog, "pts = %lld", input_buffer.pts);
+
 
 #if 1
 	if(input_buffer.addrphyY >=  (void*)0x40000000)
@@ -283,6 +304,7 @@ int CameraSourceCallback(void *cookie,  void *data)
     // enquene buffer to input buffer quene
     
 	LOGD(g_debuglog, "ID = %d\n", input_buffer.id);
+	input_buffer.pts = timestamp;
 	result = venc_device->ioctrl(venc_device, VENC_CMD_ENQUENE_INPUT_BUFFER, &input_buffer);
 
 	if(result < 0) {
@@ -401,27 +423,17 @@ int CCapEncoder::Encode(void)
 		result = m_venc_device->ioctrl(m_venc_device, VENC_CMD_GET_BITSTREAM, &m_output_buffer);
 		
 		if (m_output_buffer.size0 > 0) {
-			ost::MutexLock al(g_avfifo->cs_fifo_);
-			
-			if (g_avfifo->avc_fifo_.size() > 200) {
-				fprintf(stderr, "fifo overflow ...\n");
-				// 当积累的太多时清除fifo
-				while (!g_avfifo->avc_fifo_.empty()) {
-					slice_t *s = g_avfifo->avc_fifo_.front();
-					g_avfifo->avc_fifo_.pop_front();
-					slice_free(s);
-					fprintf(stderr, "E");
-				}
-			}
-		
+			ost::MutexLock al(g_av_map->cs_map_);
+			slice_t* s;
 			if(m_output_buffer.size1 > 0){
-				g_avfifo->avc_fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.ptr1, m_output_buffer.size1, m_output_buffer.pts, RTMP_PACKET_TYPE_VIDEO));
+				s = slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.ptr1, m_output_buffer.size1, m_output_buffer.pts, RTMP_PACKET_TYPE_VIDEO);
 			}
 			else{
-				g_avfifo->avc_fifo_.push_back(slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts, RTMP_PACKET_TYPE_VIDEO));
-			
+				s = slice_alloc(m_output_buffer.ptr0, m_output_buffer.size0, m_output_buffer.pts, RTMP_PACKET_TYPE_VIDEO);
 			}
-			g_avfifo->sem_fifo_.post();
+			
+			g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(m_output_buffer.pts, s));
+			g_av_map->sem_map_.post();
 		}
 		
 		result = m_venc_device->ioctrl(m_venc_device, VENC_CMD_RETURN_BITSTREAM, &m_output_buffer);
@@ -602,41 +614,54 @@ int CAlsaEncoder::Encode(void)
 	faacEncGetDecoderSpecificInfo(m_hEncoder, &m_enc_spec_buf, (long unsigned int*)&m_enc_spec_len);
 	while(m_mstart){
 		
-		long long timestamp;
+		long long timestamp = 0;
 		struct timeval tv;
 		struct timezone tz;
-		gettimeofday (&tv, &tz);
-	
-		timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
-		LOGD(g_debuglog, "(tv.tv_sec - g_starttime)*1000000 + tv.tv_usec is %lld", timestamp);
+		static int cont = 0;
+		static bool en = false;
+
+		//LOGD(g_debuglog, "(tv.tv_sec - g_starttime)*1000000 + tv.tv_usec is %lld", timestamp);
 		
-		// 读入的实际字节数，最大不会超过nPCMBufferSize，一般只有读到文件尾时才不是m_nPCMBufferSize
+		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
         nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+		cont++;
+		if (cont > 5) en = true;
+		
+		LOGD(g_debuglog, "CAlsaEncoder::Encode()");
+
+		if(en)
+		{
+			ost::MutexLock al(g_ptsfifo->cs_fifo_);
+			LOGD(g_debuglog, "CAlsaEncoder::Encode()");
+			gettimeofday (&tv, &tz);
+			timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
+			g_ptsfifo->fifo_.push_back(timestamp);
+			LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
+			g_ptsfifo->sem_fifo_.post();
+			LOGD(g_debuglog, "CAlsaEncoder::Encode()");
+		}
+		
 		// 输入样本数，用实际读入字节数计算
 		nInputSamples = nBytesRead / (m_nPCMBitSize / 8);
 		// (3) Encode
 		nRet = faacEncEncode(m_hEncoder, (int*) m_pbPCMBuffer, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
 		//usleep(70*1000);
 		if (nRet > 0) {
-			ost::MutexLock al(g_avfifo->cs_fifo_);
+			ost::MutexLock al(g_av_map->cs_map_);
 			
-			if (g_avfifo->aac_fifo_.size() > 200) {
-				fprintf(stderr, "fifo overflow ...\n");
-				// 当积累的太多时清除fifo
-				while (!g_avfifo->aac_fifo_.empty()) {
-					slice_t *s = g_avfifo->aac_fifo_.front();
-					g_avfifo->aac_fifo_.pop_front();
-					slice_free(s);
-					fprintf(stderr, "E");
-				}
-			}
-			
-			g_avfifo->aac_fifo_.push_back(slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO));
-			fprintf(stderr, "aac fifo push!! nRet is %d.\n", nRet);
-			//g_avfifo->sem_fifo_.post();
+			//g_avfifo->aac_fifo_.push_back(slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO));
+			g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(timestamp, slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO)));
+	
+			fprintf(stderr, "aac map insert!! nRet is %d.\n", nRet);
+			g_av_map->sem_map_.post();
 			
 			fwrite(m_pbAACBuffer, 1, nRet, m_fpAacOut);
-		}		
+		}
+		//else {
+			//先保存したptsを捨てる
+			//LOGD(g_debuglog, "aac map is not insert!!nRet is %d", nRet);
+			//g_ptsfifo->fifo_.pop_front();
+		//}
 	}
 	
 }
@@ -673,9 +698,11 @@ m_nCurPos(0)
 	}
 		
 	
-	g_avfifo = new AVfifo_t;
-	g_avfifo->outbuf_ = malloc(128*2048);
-	g_avfifo->outbuf_size_ = 128*2048;
+	g_av_map = new AVmap_t;
+	g_av_map->outbuf_ = malloc(128*2048);
+	g_av_map->outbuf_size_ = 128*2048;
+	
+	g_ptsfifo = new TimstampFifo_t;
 	
 	struct timeval tv;
     struct timezone tz;
@@ -697,10 +724,14 @@ CRTMPStream::~CRTMPStream(void)
 	if(m_alsa_enc)
 		delete m_alsa_enc;
 	
-	if(g_avfifo){
-		free(g_avfifo->outbuf_);
-		delete g_avfifo;
+	if(g_av_map){
+		free(g_av_map->outbuf_);
+		delete g_av_map;
 	}
+	
+	if(g_ptsfifo)
+		delete g_ptsfifo;
+	
 	if(g_debuglog)
 		fclose(g_debuglog);
 }
@@ -945,7 +976,7 @@ bool CRTMPStream::SendCapEncode(void)
 		if (naluUnit.pkt_type == RTMP_PACKET_TYPE_VIDEO){
 			bool bKeyframe  = (naluUnit.frame_type == 0x05) ? TRUE : FALSE;
 			// 发送H264数据帧
-			SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
+			//SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_VIDEO send.");
 			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
 		}

@@ -15,6 +15,7 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 #include <unistd.h>
 
 #include <deque>
+#include <map>
 #include <cc++/thread.h>
 
 //#include "type.h"
@@ -39,7 +40,9 @@ typedef struct slice_t
 	unsigned char pkt_type;
 } slice_t;
 
-typedef std::deque<slice_t*> SLICES;
+//typedef std::deque<slice_t*> SLICES;
+typedef std::map<long long, slice_t*> SLICES;
+typedef std::deque<long long> TIMESTAMPS;
 
 // NALU单元
 typedef struct _NaluUnit
@@ -73,17 +76,24 @@ typedef struct _RTMPMetadata
 
 } RTMPMetadata,*LPRTMPMetadata;
 
-typedef struct avfifo
+typedef struct av_map
 {	
-	SLICES avc_fifo_;		// 用于缓冲
-	SLICES aac_fifo_;		// 用于缓冲
-	ost::Mutex cs_fifo_;	
-	ost::Semaphore sem_fifo_;
+	SLICES map_;		// 用于缓冲
+	ost::Mutex cs_map_;	
+	ost::Semaphore sem_map_;
 	
 	void *outbuf_;		// 
 	int outbuf_size_;
 
-} AVfifo_t;
+} AVmap_t;
+
+
+typedef struct timestampfifo
+{	
+	TIMESTAMPS fifo_;
+	ost::Mutex cs_fifo_;	
+	ost::Semaphore sem_fifo_;
+} TimstampFifo_t;
 
 class CCapEncoder : ost::Thread
 {
@@ -185,7 +195,7 @@ private:
 	unsigned char* m_pFileBuf;
 	unsigned int  m_nFileBufSize;
 	unsigned int  m_nCurPos;
-	AVfifo_t m_avfifo; 
+	//AVfifo_t m_avfifo; 
 	CCapEncoder* m_venc_cam_cxt;
 	CAlsaEncoder* m_alsa_enc;
 };
