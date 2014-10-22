@@ -173,7 +173,6 @@ static void uyvy_nv12(const unsigned char *puyvy, unsigned char *pnv12, int widt
 int get_next_slice(NaluUnit &nalu)
 {
 	g_ptsfifo->cs_fifo_.enter();
-	LOGD(g_debuglog, "g_ptsfifo->cs_fifo_.enter()");
 	
 	while (g_ptsfifo->fifo_.empty() ) {
 		g_ptsfifo->cs_fifo_.leave();
@@ -184,10 +183,8 @@ int get_next_slice(NaluUnit &nalu)
 	slice_t *s;
 	long long pts = g_ptsfifo->fifo_.front();
 	g_ptsfifo->fifo_.pop_front();
-	LOGD(g_debuglog, "g_ptsfifo->fifo_.front():%lld.", pts);
 	
 	g_ptsfifo->cs_fifo_.leave();
-	LOGD(g_debuglog, "g_ptsfifo->cs_fifo_.leave()");
 	
 	g_av_map->cs_map_.enter();
 	std::map<long long, slice_t*>::iterator it;
@@ -196,14 +193,10 @@ int get_next_slice(NaluUnit &nalu)
 	while(it == g_av_map->map_.end())
 	{
 		g_av_map->cs_map_.leave();
-		LOGD(g_debuglog, "g_av_map->cs_map_.leave()");
 		g_av_map->sem_map_.wait();
-		LOGD(g_debuglog, "g_av_map->sem_map_.wait()");
 		g_av_map->cs_map_.enter();
-		LOGD(g_debuglog, "g_av_map->cs_map_.enter()");
 		it = g_av_map->map_.find(pts);
 	}
-	LOGD(g_debuglog, "g_av_map->cs_map_.enter()");
 	s = it->second;
 
 	//fprintf(stderr, "avc_fifo_ size is %d.\n", g_avfifo->avc_fifo_.size());
@@ -233,7 +226,6 @@ int get_next_slice(NaluUnit &nalu)
 
 
 	g_av_map->cs_map_.leave();
-	LOGD(g_debuglog, "g_av_map->cs_map_.leave()");
 
 	return rc;
 }
@@ -257,9 +249,7 @@ int CameraSourceCallback(void *cookie,  void *data)
 	if(true)
 	{
 		ost::MutexLock al(g_ptsfifo->cs_fifo_);
-		LOGD(g_debuglog, "CameraSourceCallback()!!");
 		gettimeofday (&tv, &tz);
-		LOGD(g_debuglog, "CameraSourceCallback()!!");
 		timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
 		g_ptsfifo->fifo_.push_back(timestamp);
 		LOGD(g_debuglog, "avc pts push:%lld", timestamp);
@@ -594,7 +584,7 @@ int CAlsaEncoder::FaacInit(void)
 	m_pConfiguration->useLfe=false;
 	m_pConfiguration->aacObjectType=LOW;
 	m_pConfiguration->shortctl=SHORTCTL_NORMAL;
-	m_pConfiguration->quantqual=60;
+	m_pConfiguration->quantqual=100;
 	m_pConfiguration->bandWidth=0;
 	m_pConfiguration->bitRate=0;
 	
@@ -623,8 +613,8 @@ int CAlsaEncoder::Encode(void)
 		//LOGD(g_debuglog, "(tv.tv_sec - g_starttime)*1000000 + tv.tv_usec is %lld", timestamp);
 		
 		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
-        //nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
-		nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+        nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+		//nBytesRead = fread(m_pbPCMBuffer, 1, 1024, m_fpWavIn);
 		
 		LOGD(g_debuglog, "nBytesRead:%d", nBytesRead);
 		cont++;
@@ -633,13 +623,11 @@ int CAlsaEncoder::Encode(void)
 		if(en)
 		{
 			ost::MutexLock al(g_ptsfifo->cs_fifo_);
-			LOGD(g_debuglog, "CAlsaEncoder::Encode()");
 			gettimeofday (&tv, &tz);
 			timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
 			g_ptsfifo->fifo_.push_back(timestamp);
 			LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
 			g_ptsfifo->sem_fifo_.post();
-			LOGD(g_debuglog, "CAlsaEncoder::Encode()");
 		}
 		
 		// 输入样本数，用实际读入字节数计算
@@ -659,7 +647,7 @@ int CAlsaEncoder::Encode(void)
 			fwrite(m_pbAACBuffer, 1, nRet, m_fpAacOut);
 		}
 		
-		usleep(19*1000);
+		//usleep(17*1000);
 		//else {
 			//先保存したptsを捨てる
 			//LOGD(g_debuglog, "aac map is not insert!!nRet is %d", nRet);
@@ -1015,15 +1003,6 @@ bool CRTMPStream::SendCapEncode(void)
 
 int CRTMPStream::SendAacPacket(unsigned char *data, unsigned int size, unsigned long pts)
 {
-/*
-	long timestamp;
-	
-	struct timeval tv;
-    struct timezone tz;
-    gettimeofday (&tv, &tz);
-	
-	timestamp = (tv.tv_sec*1000000 + tv.tv_usec - m_starttime)/1000;
-*/	
 	RTMPPacket packet;
 	RTMPPacket_Reset(&packet);
 	RTMPPacket_Alloc(&packet,size+2);
@@ -1040,8 +1019,8 @@ int CRTMPStream::SendAacPacket(unsigned char *data, unsigned int size, unsigned 
     packet.m_headerType = RTMP_PACKET_SIZE_MEDIUM;
     packet.m_nInfoField2 = m_pRtmp->m_stream_id;
 	
-	fprintf(stderr, "packet.m_nTimeStamp is %d.\n", packet.m_nTimeStamp);
-	fprintf(stderr, "pts is %d.\n", pts);
+	//fprintf(stderr, "packet.m_nTimeStamp is %d.\n", packet.m_nTimeStamp);
+	//fprintf(stderr, "pts is %d.\n", pts);
 	int nRet = RTMP_SendPacket(m_pRtmp,&packet,0);
 	
 	RTMPPacket_Free(&packet);
@@ -1062,8 +1041,8 @@ int CRTMPStream::SendAacSpec(void)
 	packet.m_body[0] = 0xAE;
 	packet.m_body[1] = 0x00;
 	memcpy(&packet.m_body[2],m_alsa_enc->m_enc_spec_buf, m_alsa_enc->m_enc_spec_len); /*spec_buf是AAC sequence header数据*/
-	packet.m_body[2] = 0x11;
-	packet.m_body[3] = 0x88;
+	//packet.m_body[2] = 0x11;
+	//packet.m_body[3] = 0x88;
 	
 	packet.m_packetType = RTMP_PACKET_TYPE_AUDIO;
     packet.m_nBodySize = m_alsa_enc->m_enc_spec_len+2;

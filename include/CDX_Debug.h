@@ -49,6 +49,7 @@ extern "C" {
 #define LOGV(...)   ((void)0)
 #define LOGI(...)   ((void)0)
 #define LOGW(...)   ((void)0)
+#define LOGD(fd, ...) ((void)0)
 	
 #else
 #define LOGV(...) ((void)printf("V/" LOG_TAG ": "));         \
