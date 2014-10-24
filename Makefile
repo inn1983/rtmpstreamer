@@ -29,15 +29,15 @@ INCLUDES:=$(foreach dir,$(SRCDIRS),-I$(dir)) \
 	-I./include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)
 
 #LIBRTMP=../librtmp/librtmp.a
-LIBRTMP=-L../librtmp -lrtmp 
-INCRTMP=-I../librtmp
+LIBRTMP=-L./librtmp -lrtmp 
+INCRTMP=-I./librtmp
 
 CFLAGS += -Wall -DOS_LINUX -O2 -g $(INCLUDES) $(INCRTMP)
 CXXFLAGS += -Wall -DOS_LINUX -O2 -g $(INCLUDES) $(INCRTMP)
 #LIBS += ./lib/A20/libvencoder.so \
 #	$(LIVE_LIBS) -lpthread -lccgnu2 -ldl
 
-LIBS += $(LIBRTMP) ../libsunxi/A20/libvencoder.so -lpthread -lccgnu2 -ldl -lfaac
+LIBS += $(LIBRTMP) ./libsunxi/A20/libvencoder.so -lpthread -lccgnu2 -ldl -lfaac
 
 SRC := $(wildcard *.c) $(foreach dir,$(SRCDIRS),$(wildcard $(dir)/*.c))
 SRCC := $(wildcard *.cpp)
