@@ -26,8 +26,10 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 AVfifo_t* g_avfifo; //グローバルfifo
 
 FILE* g_debuglog = NULL;
+FILE* g_errorlog = NULL;
 
 long long g_starttime = 0;
+bool g_time_reset = 0;
 
 
 enum
@@ -238,7 +240,7 @@ int CameraSourceCallback(void *cookie,  void *data)
 	input_buffer.pts = 1000000 * (long long)p_buf->timestamp.tv_sec + (long long)p_buf->timestamp.tv_usec;
 	
 	//save starttime 
-	if (g_starttime == 0){
+	if (g_starttime == 0 || g_time_reset){
 		g_starttime = input_buffer.pts; //input_buffer.pts long long is 64bit
 		LOGD(g_debuglog, "g_starttime:%d", g_starttime);
 	}
@@ -449,6 +451,8 @@ m_nCurPos(0)
 
 	g_avfifo->outbuf_ = malloc(128*2048);
 	g_avfifo->outbuf_size_ = 128*2048;
+	
+	g_errorlog = fopen("error.log", "w+");
 }
 
 CRTMPStream::~CRTMPStream(void)
@@ -468,12 +472,16 @@ CRTMPStream::~CRTMPStream(void)
 	}
 	if(g_debuglog)
 		fclose(g_debuglog);
+	
+	if(g_errorlog)	
+		fclose(g_errorlog);
 }
 
 bool CRTMPStream::Connect(const char* url)
 {
 	int ret;
 	LOGD(g_debuglog, "CRTMPStream::Connect start!.");
+	m_serverurl = url;
 	ret = RTMP_SetupURL(m_pRtmp, (char*)url);
 	if(ret < 0)
 	{
@@ -653,24 +661,6 @@ bool CRTMPStream::SendH264Packet(unsigned char *data,unsigned int size,bool bIsK
 
 bool CRTMPStream::SendCapEncode(void)
 {
-/*
-	if(pFileName == NULL)
-	{
-		return FALSE;
-	}
-	FILE *fp = fopen(pFileName, "rb");  
-	if(!fp)  
-	{  
-		printf("ERROR:open file %s failed!",pFileName);
-	}  
-	fseek(fp, 0, SEEK_SET);
-	m_nFileBufSize = fread(m_pFileBuf, sizeof(unsigned char), FILEBUFSIZE, fp);
-	if(m_nFileBufSize >= FILEBUFSIZE)
-	{
-		printf("warning : File size is larger than BUFSIZE\n");
-	}
-	fclose(fp);  
-*/
 	RTMPMetadata metaData;
 	memset(&metaData,0,sizeof(RTMPMetadata));
 
@@ -703,12 +693,29 @@ bool CRTMPStream::SendCapEncode(void)
 	//while(ReadOneNaluFromBuf(naluUnit))
 	while(get_next_slice(naluUnit))
 	{
-		//if (tick >= 0x00fffff0)
-		//	tick = 0; 
 		bool bKeyframe  = (naluUnit.type == 0x05) ? TRUE : FALSE;
 		// 发送H264数据帧
-		SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
-		LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
+		bool bRet = SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
+		if (bRet != true){
+			while(1){
+				LOGD(g_debuglog, "Rtmp restart !!");
+				g_time_reset = true;
+				time_t t = time(0);
+				char tmp[64];
+				strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S", localtime(&t) ); //格式化输出.
+				fprintf(g_errorlog, "%s:Rtmp restart !!\n", tmp);
+				if (Connect(m_serverurl) == true)
+				{
+					SendMetadata(&metaData);
+					g_time_reset = false;
+					break;
+				}
+				msleep(100);
+			}
+		}else {
+			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
+		}
+
 		cont++;
 		if (cont > 2000){
 			// 发送MetaData
