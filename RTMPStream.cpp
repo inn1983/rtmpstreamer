@@ -438,7 +438,67 @@ void CCapEncoder::run()
 	Encode();
 }
 
-CAlsaEncoder::CAlsaEncoder()
+
+CAlsaCapture::CAlsaCapture(unsigned int nMaxInputBytes)
+{
+
+	m_fpWavIn = fopen("./WavInFifo.wav", "rb");
+	if (m_fpWavIn)
+		printf("WavInFifo is open!!\n");
+	
+	m_pbPCMBuffer = new BYTE [nMaxInputBytes];
+	m_nMaxInputBytes = nMaxInputBytes;
+	m_mstart = 1;
+	
+	m_out_->data_ = malloc(128*2048);
+	m_out_->len_ = 128*2048;
+	
+	start(); //start thread
+}
+
+CAlsaCapture::~CAlsaCapture()
+{	
+	m_mstart = 0;
+	join();
+	delete[] m_pbPCMBuffer;
+	free(m_out_->data_);
+	
+	fclose(m_fpWavIn);
+}
+
+int CAlsaCapture::AlsaInit(void)
+{
+
+
+}
+
+void CAlsaCapture::run(void)
+{
+	long long timestamp = 0;
+	struct timeval tv;
+	struct timezone tz;
+	int nBytesRead;
+	
+	while(m_mstart){
+	
+		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
+		nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+	
+		{
+			ost::MutexLock al(m_cs_fifo_);
+			gettimeofday (&tv, &tz);
+			timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
+			m_fifo_.push_back(slice_alloc(m_pbPCMBuffer, nBytesRead, timestamp, 0));
+			//LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
+			m_sem_fifo_.post();
+		}
+	
+	usleep(10*1000);
+	}
+
+}
+
+CAacEncoder::CAacEncoder()
 {
 	m_buffer_frames =  128;
 	//m_rate = 11025;
@@ -449,35 +509,29 @@ CAlsaEncoder::CAlsaEncoder()
 	
 	//AlsaInit();
 	FaacInit();
-	
-	//struct timeval tv;
-    //struct timezone tz;
-    //gettimeofday (&tv, &tz);
-	//m_starttime = tv.tv_sec;
-	
 	m_mstart = 1;
 	start(); //start thread
 	
 }
 
-
-CAlsaEncoder::~CAlsaEncoder()
+CAacEncoder::~CAacEncoder()
 {   
 	m_mstart = 0;
 	join();
 	// (4) Close FAAC engine
 	int nRet;
     nRet = faacEncClose(m_hEncoder);
-	delete[] m_pbPCMBuffer;
     delete[] m_pbAACBuffer;
-    fclose(m_fpWavIn);
 	fclose(m_fpAacOut);
+	
+	if(m_alsacap)
+		delete m_alsacap;
 }
 
-
-int CAlsaEncoder::AlsaInit(void)
-{
 #if 0
+int CAacEncoder::AlsaInit(void)
+{
+
 	int i;
 	int err;
 	if ((err = snd_pcm_open (&capture_handle, argv[1], SND_PCM_STREAM_CAPTURE, 0)) < 0) {
@@ -549,15 +603,13 @@ int CAlsaEncoder::AlsaInit(void)
 	fprintf(stdout, "audio interface prepared\n");
 
 	return 0;
-#endif
-}
 
-int CAlsaEncoder::FaacInit(void)
+}
+#endif
+
+int CAacEncoder::FaacInit(void)
 {
 	int nRet;
-	m_fpWavIn = fopen("./WavInFifo.wav", "rb");	//input fifo
-	if (m_fpWavIn) 
-		printf("WavInFifo is open!!\n");
 		
 	m_fpAacOut =  fopen("./dump.aac", "wb");
 	
@@ -565,6 +617,8 @@ int CAlsaEncoder::FaacInit(void)
 	m_hEncoder = faacEncOpen(m_rate, m_nChannels, &m_nInputSamples, &m_nMaxOutputBytes);//初始化aac句柄，同时获取最大输入样本，及编码所需最小字节
 	
 	m_nMaxInputBytes=m_nInputSamples * m_nPCMBitSize / 8;//计算最大输入字节,跟据最大输入样本数
+	m_alsacap = new CAlsaCapture(m_nMaxInputBytes);
+	
 	printf("m_nInputSamples:%d m_nMaxInputBytes:%d m_nMaxOutputBytes:%d\n", m_nInputSamples, m_nMaxInputBytes,m_nMaxOutputBytes);
     
 	if(m_hEncoder == NULL)
@@ -573,7 +627,7 @@ int CAlsaEncoder::FaacInit(void)
         return -1;
     }
 	
-	m_pbPCMBuffer = new BYTE [m_nMaxInputBytes];
+	//m_pbPCMBuffer = new BYTE [m_nMaxInputBytes];
 	m_pbAACBuffer = new BYTE [m_nMaxOutputBytes];
 	
 	// (2.1) Get current encoding configuration
@@ -594,7 +648,30 @@ int CAlsaEncoder::FaacInit(void)
 	return 0;
 }
 
-int CAlsaEncoder::Encode(void)
+slice_t* CAacEncoder::GetPCM(void)
+{
+	m_alsacap->m_cs_fifo_.enter();
+	
+	while (m_alsacap->m_fifo_.empty() ) {
+		m_alsacap->m_cs_fifo_.leave();
+		m_alsacap->m_sem_fifo_.wait();
+		m_alsacap->m_cs_fifo_.enter();
+	}
+	slice_t *s;
+	s = m_alsacap->m_fifo_.front();
+	m_alsacap->m_fifo_.pop_front();
+	if(s->len_ > m_alsacap->m_out_->len_)
+		 m_alsacap->m_out_->len_ = (s->len_ + 4095)/4096*4096;
+	m_alsacap->m_out_->data_ = realloc(m_alsacap->m_out_->data_, m_alsacap->m_out_->len_);
+	
+	memcpy(m_alsacap->m_out_->data_, s->data_, s->len_);
+	
+	m_alsacap->m_cs_fifo_.leave();
+	return m_alsacap->m_out_;
+}
+
+
+int CAacEncoder::Encode(void)
 {
 	//snd_pcm_readi(capture_handle, buffer, buffer_frames);
 	int nBytesRead;
@@ -604,42 +681,32 @@ int CAlsaEncoder::Encode(void)
 	faacEncGetDecoderSpecificInfo(m_hEncoder, &m_enc_spec_buf, (long unsigned int*)&m_enc_spec_len);
 	while(m_mstart){
 		
-		long long timestamp = 0;
-		struct timeval tv;
-		struct timezone tz;
 		static int cont = 0;
 		static bool en = false;
-
-		//LOGD(g_debuglog, "(tv.tv_sec - g_starttime)*1000000 + tv.tv_usec is %lld", timestamp);
+		slice_t* pcmdata;
 		
-		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
-        nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
-		//nBytesRead = fread(m_pbPCMBuffer, 1, 1024, m_fpWavIn);
-		
-		LOGD(g_debuglog, "nBytesRead:%d", nBytesRead);
+		pcmdata = GetPCM();
+		//LOGD(g_debuglog, "nBytesRead:%d", nBytesRead);
 		cont++;
 		if (cont > 5) en = true;
 	
 		if(en)
 		{
 			ost::MutexLock al(g_ptsfifo->cs_fifo_);
-			gettimeofday (&tv, &tz);
-			timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
-			g_ptsfifo->fifo_.push_back(timestamp);
-			LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
+			g_ptsfifo->fifo_.push_back(pcmdata->pts_);
+			LOGD(g_debuglog, "aac pts push: %lld.", pcmdata->pts_);
 			g_ptsfifo->sem_fifo_.post();
 		}
 		
 		// 输入样本数，用实际读入字节数计算
-		nInputSamples = nBytesRead / (m_nPCMBitSize / 8);
+		nInputSamples = pcmdata->len_ / (m_nPCMBitSize / 8);
 		// (3) Encode
-		nRet = faacEncEncode(m_hEncoder, (int*) m_pbPCMBuffer, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
+		nRet = faacEncEncode(m_hEncoder, (int*) pcmdata->data_, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
 		//usleep(70*1000);
 		if (nRet > 0 && en) {
 			ost::MutexLock al(g_av_map->cs_map_);
-			
 			//g_avfifo->aac_fifo_.push_back(slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO));
-			g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(timestamp, slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO)));
+			g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(pcmdata->pts_, slice_alloc(m_pbAACBuffer, nRet, pcmdata->pts_, RTMP_PACKET_TYPE_AUDIO)));
 	
 			fprintf(stderr, "aac map insert!! nRet is %d.\n", nRet);
 			g_av_map->sem_map_.post();
@@ -648,17 +715,12 @@ int CAlsaEncoder::Encode(void)
 		}
 		
 		//usleep(17*1000);
-		//else {
-			//先保存したptsを捨てる
-			//LOGD(g_debuglog, "aac map is not insert!!nRet is %d", nRet);
-			//g_ptsfifo->fifo_.pop_front();
-		//}
 	}
 	
 }
 
 
-void CAlsaEncoder::run()
+void CAacEncoder::run()
 {
 	Encode();
 }
@@ -685,10 +747,9 @@ m_nCurPos(0)
 	
 	if(bEncode){
 		m_venc_cam_cxt = new CCapEncoder();
-		m_alsa_enc = new CAlsaEncoder();
+		m_alsa_enc = new CAacEncoder();
 	}
-		
-	
+
 	g_av_map = new AVmap_t;
 	g_av_map->outbuf_ = malloc(128*2048);
 	g_av_map->outbuf_size_ = 128*2048;

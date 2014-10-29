@@ -43,6 +43,7 @@ typedef struct slice_t
 //typedef std::deque<slice_t*> SLICES;
 typedef std::map<long long, slice_t*> SLICES;
 typedef std::deque<long long> TIMESTAMPS;
+typedef std::deque<slice_t*> PCMS;
 
 // NALU单元
 typedef struct _NaluUnit
@@ -95,6 +96,16 @@ typedef struct timestampfifo
 	ost::Semaphore sem_fifo_;
 } TimstampFifo_t;
 
+/*
+typedef struct asla_fifo
+{	
+	PCMS fifo_;
+	ost::Mutex cs_fifo_;	
+	ost::Semaphore sem_fifo_;
+	slice_t* out_;
+} AlsaFifo_t;
+*/
+
 class CCapEncoder : ost::Thread
 {
 public:
@@ -121,14 +132,37 @@ private:
 	int m_mstart;
 };
 
-class CAlsaEncoder : ost::Thread
+class CAlsaCapture : ost::Thread
 {
 public:
-	CAlsaEncoder(void);
-	~CAlsaEncoder(void);
+	CAlsaCapture(unsigned int nMaxInputBytes);
+	~CAlsaCapture(void);
 	int AlsaInit(void);
-	int FaacInit(void);
 	
+	int Capature(void);
+	//AlsaFifo_t m_pcmfifo;
+
+	PCMS m_fifo_;
+	ost::Mutex m_cs_fifo_;	
+	ost::Semaphore m_sem_fifo_;
+	slice_t* m_out_;
+
+private:
+	FILE* m_fpWavIn;
+	unsigned int m_nMaxInputBytes;
+	unsigned char* m_pbPCMBuffer;
+	bool m_mstart;
+	void run();
+	
+};
+
+
+class CAacEncoder : ost::Thread
+{
+public:
+	CAacEncoder(void);
+	~CAacEncoder(void);
+	int FaacInit(void);
 	int Encode(void);
 	
 	unsigned char* m_enc_spec_buf;
@@ -146,18 +180,22 @@ private:
 	snd_pcm_format_t m_format;
 	int m_nChannels;
 	
-	FILE* m_fpWavIn;
+	//FILE* m_fpWavIn;
 	FILE* m_fpAacOut;
+	
+	CAlsaCapture* m_alsacap;
 	
 	faacEncHandle m_hEncoder;		//aac handler
 	faacEncConfigurationPtr m_pConfiguration;//aac设置指针
-	unsigned char* m_pbPCMBuffer;
+	//unsigned char* m_pbPCMBuffer;
     unsigned char* m_pbAACBuffer;
 	//unsigned long m_nPCMBufferSize;
 	unsigned long m_nInputSamples;
 	unsigned long m_nMaxInputBytes;
 	unsigned long m_nMaxOutputBytes;
 	unsigned char m_nPCMBitSize;
+	
+	slice_t* GetPCM(void);
 	
 };
 
@@ -197,7 +235,7 @@ private:
 	unsigned int  m_nCurPos;
 	//AVfifo_t m_avfifo; 
 	CCapEncoder* m_venc_cam_cxt;
-	CAlsaEncoder* m_alsa_enc;
+	CAacEncoder* m_alsa_enc;
 };
 
 #endif
