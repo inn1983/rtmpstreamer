@@ -145,7 +145,7 @@ public:
 	PCMS m_fifo_;
 	ost::Mutex m_cs_fifo_;	
 	ost::Semaphore m_sem_fifo_;
-	slice_t* m_out_;
+	slice_t m_out_;
 
 private:
 	FILE* m_fpWavIn;

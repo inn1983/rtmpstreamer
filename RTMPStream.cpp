@@ -27,6 +27,8 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 AVmap_t* g_av_map;
 TimstampFifo_t* g_ptsfifo;
 
+slice_t dummydata = {NULL, 0, 0, 0};
+
 FILE* g_debuglog = NULL;
 
 long long g_starttime = 0;
@@ -198,7 +200,15 @@ int get_next_slice(NaluUnit &nalu)
 		it = g_av_map->map_.find(pts);
 	}
 	s = it->second;
-
+	/*
+	if (s->pkt_type == 0)	//dummydata
+	{
+		g_av_map->map_.erase(it);	//mapから要素を削除
+		g_av_map->cs_map_.leave();
+		return 0;
+	}
+	*/
+	
 	//fprintf(stderr, "avc_fifo_ size is %d.\n", g_avfifo->avc_fifo_.size());
 
 	if (s->len_ > g_av_map->outbuf_size_) {
@@ -213,7 +223,7 @@ int get_next_slice(NaluUnit &nalu)
 		nalu.frame_type = nalu.data[0]&0x1f;
 		nalu.size = s->len_-4;
 	}
-	else {
+	else if (s->pkt_type == RTMP_PACKET_TYPE_AUDIO)  {
 		nalu.data = (unsigned char*)g_av_map->outbuf_+7;
 		nalu.size = s->len_-7;
 	}
@@ -223,7 +233,6 @@ int get_next_slice(NaluUnit &nalu)
 	int rc = nalu.size;
 	slice_free(s);
 	g_av_map->map_.erase(it);	//mapから要素を削除
-
 
 	g_av_map->cs_map_.leave();
 
@@ -450,8 +459,8 @@ CAlsaCapture::CAlsaCapture(unsigned int nMaxInputBytes)
 	m_nMaxInputBytes = nMaxInputBytes;
 	m_mstart = 1;
 	
-	m_out_->data_ = malloc(128*2048);
-	m_out_->len_ = 128*2048;
+	m_out_.data_ = malloc(nMaxInputBytes);
+	m_out_.len_ = nMaxInputBytes;
 	
 	start(); //start thread
 }
@@ -461,7 +470,7 @@ CAlsaCapture::~CAlsaCapture()
 	m_mstart = 0;
 	join();
 	delete[] m_pbPCMBuffer;
-	free(m_out_->data_);
+	free(m_out_.data_);
 	
 	fclose(m_fpWavIn);
 }
@@ -478,22 +487,37 @@ void CAlsaCapture::run(void)
 	struct timeval tv;
 	struct timezone tz;
 	int nBytesRead;
-	
+	static int cont = 0;
+	static bool en = false;
 	while(m_mstart){
 	
 		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
+		LOGD(g_debuglog, "CAlsaCapture::run!");
+		LOGD(g_debuglog, "m_nMaxInputBytes is: %d", m_nMaxInputBytes);
+		
 		nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
-	
+		cont++;
+		if (cont > 5) en = true;
+		
+		if(en)
 		{
-			ost::MutexLock al(m_cs_fifo_);
+			ost::MutexLock al(g_ptsfifo->cs_fifo_);
 			gettimeofday (&tv, &tz);
 			timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
+			g_ptsfifo->fifo_.push_back(timestamp);
+			LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
+			g_ptsfifo->sem_fifo_.post();
+		}
+		
+		{
+			ost::MutexLock al(m_cs_fifo_);
+			LOGD(g_debuglog, "nBytesRead: %d", nBytesRead);
 			m_fifo_.push_back(slice_alloc(m_pbPCMBuffer, nBytesRead, timestamp, 0));
-			//LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
+			LOGD(g_debuglog, "pcm data and pts push: %lld.", timestamp);
 			m_sem_fifo_.post();
 		}
 	
-	usleep(10*1000);
+	usleep(5*1000);
 	}
 
 }
@@ -660,14 +684,16 @@ slice_t* CAacEncoder::GetPCM(void)
 	slice_t *s;
 	s = m_alsacap->m_fifo_.front();
 	m_alsacap->m_fifo_.pop_front();
-	if(s->len_ > m_alsacap->m_out_->len_)
-		 m_alsacap->m_out_->len_ = (s->len_ + 4095)/4096*4096;
-	m_alsacap->m_out_->data_ = realloc(m_alsacap->m_out_->data_, m_alsacap->m_out_->len_);
+	//if(s->len_ > m_alsacap->m_out_.len_)
+	//	 m_alsacap->m_out_.len_ = (s->len_ + 4095)/4096*4096;
+	//m_alsacap->m_out_.data_ = realloc(m_alsacap->m_out_.data_, m_alsacap->m_out_.len_);
+	m_alsacap->m_out_.len_ = s->len_;
+	m_alsacap->m_out_.pts_ = s->pts_;
+	memcpy(m_alsacap->m_out_.data_, s->data_, s->len_);
 	
-	memcpy(m_alsacap->m_out_->data_, s->data_, s->len_);
-	
+	slice_free(s);
 	m_alsacap->m_cs_fifo_.leave();
-	return m_alsacap->m_out_;
+	return &m_alsacap->m_out_;
 }
 
 
@@ -685,30 +711,29 @@ int CAacEncoder::Encode(void)
 		static bool en = false;
 		slice_t* pcmdata;
 		
+		LOGD(g_debuglog, "get pcmdata start.");
 		pcmdata = GetPCM();
-		//LOGD(g_debuglog, "nBytesRead:%d", nBytesRead);
-		cont++;
-		if (cont > 5) en = true;
-	
-		if(en)
-		{
-			ost::MutexLock al(g_ptsfifo->cs_fifo_);
-			g_ptsfifo->fifo_.push_back(pcmdata->pts_);
-			LOGD(g_debuglog, "aac pts push: %lld.", pcmdata->pts_);
-			g_ptsfifo->sem_fifo_.post();
-		}
-		
+		LOGD(g_debuglog, "get pcmdata done.");
+
 		// 输入样本数，用实际读入字节数计算
 		nInputSamples = pcmdata->len_ / (m_nPCMBitSize / 8);
+		LOGD(g_debuglog, "nInputSamples is %d.", nInputSamples);
 		// (3) Encode
 		nRet = faacEncEncode(m_hEncoder, (int*) pcmdata->data_, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
+		LOGD(g_debuglog, "faacEncEncode done.");
+		cont++;
+		if (cont > 5) en = true;
 		//usleep(70*1000);
-		if (nRet > 0 && en) {
+		if (nRet > 0 && en)
+		{
 			ost::MutexLock al(g_av_map->cs_map_);
 			//g_avfifo->aac_fifo_.push_back(slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO));
-			g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(pcmdata->pts_, slice_alloc(m_pbAACBuffer, nRet, pcmdata->pts_, RTMP_PACKET_TYPE_AUDIO)));
-	
-			fprintf(stderr, "aac map insert!! nRet is %d.\n", nRet);
+			//if (nRet) 
+				g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(pcmdata->pts_, slice_alloc(m_pbAACBuffer, nRet, pcmdata->pts_, RTMP_PACKET_TYPE_AUDIO)));
+			//else 
+			//	g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(pcmdata->pts_, &dummydata));
+			
+			LOGD(g_debuglog, "aac map insert!! nRet:%d. pts_:%lld", nRet, pcmdata->pts_);
 			g_av_map->sem_map_.post();
 			
 			fwrite(m_pbAACBuffer, 1, nRet, m_fpAacOut);
@@ -1021,30 +1046,30 @@ bool CRTMPStream::SendCapEncode(void)
 
 	unsigned int tick = 0x00ff0000;
 	unsigned int cont = 0;
+	int ret;
 	//unsigned int tick = 0;
 	//while(ReadOneNaluFromBuf(naluUnit))
-	while(get_next_slice(naluUnit))
+	while(ret = get_next_slice(naluUnit))
 	{
-		if (naluUnit.pkt_type == RTMP_PACKET_TYPE_VIDEO){
+		if (!ret){
+			LOGD(g_debuglog, "dummy data!!");
+		
+		}
+		else if (naluUnit.pkt_type == RTMP_PACKET_TYPE_VIDEO){
 			bool bKeyframe  = (naluUnit.frame_type == 0x05) ? TRUE : FALSE;
 			// 发送H264数据帧
 			SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_VIDEO send.");
 			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
 		}
-		else {
+		else if (naluUnit.pkt_type == RTMP_PACKET_TYPE_AUDIO){
 			// 发送AAC数据
 			SendAacPacket(naluUnit.data, naluUnit.size, naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_AUDIO send.");
 			LOGD(g_debuglog, "naluUnit.pts:%u.", naluUnit.pts);
 		}
+
 		
-		cont++;
-		if (cont > 2000){
-			// 发送MetaData
-			//SendMetadata(&metaData);
-			cont = 0;
-		}
 
 #if LOG_FILE
 		//logファイルを新たに作る
