@@ -487,8 +487,8 @@ void CAlsaCapture::run(void)
 	struct timeval tv;
 	struct timezone tz;
 	int nBytesRead;
-	static int cont = 0;
-	static bool en = false;
+	//static int cont = 0;
+	//static bool en = false;
 	while(m_mstart){
 	
 		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
@@ -496,6 +496,7 @@ void CAlsaCapture::run(void)
 		LOGD(g_debuglog, "m_nMaxInputBytes is: %d", m_nMaxInputBytes);
 		
 		nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
+		/*
 		cont++;
 		if (cont > 5) en = true;
 		
@@ -508,7 +509,7 @@ void CAlsaCapture::run(void)
 			LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
 			g_ptsfifo->sem_fifo_.post();
 		}
-		
+		*/
 		{
 			ost::MutexLock al(m_cs_fifo_);
 			LOGD(g_debuglog, "nBytesRead: %d", nBytesRead);
@@ -517,7 +518,7 @@ void CAlsaCapture::run(void)
 			m_sem_fifo_.post();
 		}
 	
-	usleep(5*1000);
+	//usleep(5*1000);
 	}
 
 }
@@ -703,7 +704,9 @@ int CAacEncoder::Encode(void)
 	int nBytesRead;
 	int nRet;
 	int nInputSamples;
-	
+	long long timestamp = 0;
+	struct timeval tv;
+	struct timezone tz;
 	faacEncGetDecoderSpecificInfo(m_hEncoder, &m_enc_spec_buf, (long unsigned int*)&m_enc_spec_len);
 	while(m_mstart){
 		
@@ -713,6 +716,19 @@ int CAacEncoder::Encode(void)
 		
 		LOGD(g_debuglog, "get pcmdata start.");
 		pcmdata = GetPCM();
+		cont++;
+		if (cont > 5) en = true;
+		
+		if(en)
+		{
+			ost::MutexLock al(g_ptsfifo->cs_fifo_);
+			gettimeofday (&tv, &tz);
+			timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
+			g_ptsfifo->fifo_.push_back(timestamp);
+			LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
+			g_ptsfifo->sem_fifo_.post();
+		}
+		
 		LOGD(g_debuglog, "get pcmdata done.");
 
 		// 输入样本数，用实际读入字节数计算
@@ -721,15 +737,16 @@ int CAacEncoder::Encode(void)
 		// (3) Encode
 		nRet = faacEncEncode(m_hEncoder, (int*) pcmdata->data_, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
 		LOGD(g_debuglog, "faacEncEncode done.");
-		cont++;
-		if (cont > 5) en = true;
+		//cont++;
+		//if (cont > 5) en = true;
 		//usleep(70*1000);
 		if (nRet > 0 && en)
 		{
 			ost::MutexLock al(g_av_map->cs_map_);
 			//g_avfifo->aac_fifo_.push_back(slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO));
 			//if (nRet) 
-				g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(pcmdata->pts_, slice_alloc(m_pbAACBuffer, nRet, pcmdata->pts_, RTMP_PACKET_TYPE_AUDIO)));
+			//g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(pcmdata->pts_, slice_alloc(m_pbAACBuffer, nRet, pcmdata->pts_, RTMP_PACKET_TYPE_AUDIO)));
+			g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(timestamp, slice_alloc(m_pbAACBuffer, nRet, timestamp, RTMP_PACKET_TYPE_AUDIO)));
 			//else 
 			//	g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(pcmdata->pts_, &dummydata));
 			
@@ -1058,15 +1075,17 @@ bool CRTMPStream::SendCapEncode(void)
 		else if (naluUnit.pkt_type == RTMP_PACKET_TYPE_VIDEO){
 			bool bKeyframe  = (naluUnit.frame_type == 0x05) ? TRUE : FALSE;
 			// 发送H264数据帧
-			SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
+			bool nRet = SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_VIDEO send.");
 			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
+			if (!nRet) exit(0);
 		}
 		else if (naluUnit.pkt_type == RTMP_PACKET_TYPE_AUDIO){
 			// 发送AAC数据
-			SendAacPacket(naluUnit.data, naluUnit.size, naluUnit.pts);
+			bool nRet = SendAacPacket(naluUnit.data, naluUnit.size, naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_AUDIO send.");
 			LOGD(g_debuglog, "naluUnit.pts:%u.", naluUnit.pts);
+			if (!nRet) exit(0);
 		}
 
 		
@@ -1111,7 +1130,7 @@ int CRTMPStream::SendAacPacket(unsigned char *data, unsigned int size, unsigned 
 	
 	RTMPPacket_Free(&packet);
 
-	return 0;
+	return nRet;
 }
 
 int CRTMPStream::SendAacSpec(void)
