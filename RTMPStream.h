@@ -96,15 +96,14 @@ typedef struct timestampfifo
 	ost::Semaphore sem_fifo_;
 } TimstampFifo_t;
 
-/*
-typedef struct asla_fifo
-{	
-	PCMS fifo_;
-	ost::Mutex cs_fifo_;	
-	ost::Semaphore sem_fifo_;
-	slice_t* out_;
-} AlsaFifo_t;
-*/
+typedef struct alsa_cfg
+{
+	int nPCMBitSize;
+	unsigned int nMaxInputBytes;
+	int nChannels;
+	int sample_rate;
+
+} alsa_cfg_t;
 
 class CCapEncoder : ost::Thread
 {
@@ -135,7 +134,8 @@ private:
 class CAlsaCapture : ost::Thread
 {
 public:
-	CAlsaCapture(unsigned int nMaxInputBytes);
+	//CAlsaCapture(unsigned int nMaxInputBytes);
+	CAlsaCapture(alsa_cfg_t* cfg);
 	~CAlsaCapture(void);
 	int AlsaInit(void);
 	
@@ -149,8 +149,16 @@ public:
 
 private:
 	FILE* m_fpWavIn;
-	unsigned int m_nMaxInputBytes;
+	snd_pcm_t* m_handle;
+	snd_pcm_uframes_t m_frames;
+	//snd_pcm_uframes_t m_frames_fact;
+	int m_nPCMBitSize;
+	//unsigned int m_nMaxInputBytes;
+	unsigned int m_nMaxPushBytes; //実際プッシュするバイト数, faacの入力できる最大バイト数
 	unsigned char* m_pbPCMBuffer;
+	int m_nChannels;
+	unsigned int m_sample_rate;
+	
 	bool m_mstart;
 	void run();
 	
@@ -173,7 +181,6 @@ public:
 private:
 	void run();
 	int m_mstart;
-	int m_buffer_frames;
 	unsigned int m_rate;
 	snd_pcm_t *m_capture_handle;
 	snd_pcm_hw_params_t *m_hw_params;

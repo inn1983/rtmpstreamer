@@ -448,20 +448,27 @@ void CCapEncoder::run()
 }
 
 
-CAlsaCapture::CAlsaCapture(unsigned int nMaxInputBytes)
+CAlsaCapture::CAlsaCapture(alsa_cfg_t* cfg)
 {
 
-	m_fpWavIn = fopen("./WavInFifo.wav", "rb");
-	if (m_fpWavIn)
-		printf("WavInFifo is open!!\n");
+	//m_fpWavIn = fopen("./WavInFifo.wav", "rb");
+	//if (m_fpWavIn)
+	//	printf("WavInFifo is open!!\n");
 	
-	m_pbPCMBuffer = new BYTE [nMaxInputBytes];
-	m_nMaxInputBytes = nMaxInputBytes;
+	m_nMaxPushBytes = cfg->nMaxInputBytes;
+	//m_pbPCMBuffer = new BYTE [m_nMaxInputBytes];
+	m_nChannels = cfg->nChannels;
+	m_sample_rate = cfg->sample_rate;
+	m_nPCMBitSize = cfg->nPCMBitSize;
+	
+	m_frames = m_nMaxPushBytes / ((m_nPCMBitSize/8) * m_nChannels);
+	
+	//m_out_.data_ = malloc(m_nMaxInputBytes);
+	//m_out_.len_ = m_nMaxInputBytes;
+	
+	AlsaInit();
+	LOGD(g_debuglog, "AlsaInit() done!!");
 	m_mstart = 1;
-	
-	m_out_.data_ = malloc(nMaxInputBytes);
-	m_out_.len_ = nMaxInputBytes;
-	
 	start(); //start thread
 }
 
@@ -477,6 +484,62 @@ CAlsaCapture::~CAlsaCapture()
 
 int CAlsaCapture::AlsaInit(void)
 {
+	snd_pcm_hw_params_t *params;
+	int rc;
+	unsigned int val;
+	int dir;
+	/* Open PCM device for recording (capture). */
+	rc = snd_pcm_open(&m_handle, "default",
+						SND_PCM_STREAM_CAPTURE, 0);
+	if (rc < 0) {
+		LOGD(g_debuglog, "unable to open pcm device: %s", snd_strerror(rc));
+		::exit(1);
+	}
+
+	 /* Allocate a hardware parameters object. */
+	snd_pcm_hw_params_alloca(&params);
+
+	 /* Fill it in with default values. */
+	snd_pcm_hw_params_any(m_handle, params);
+
+	 /* Set the desired hardware parameters. */
+
+	 /* Interleaved mode */
+	snd_pcm_hw_params_set_access(m_handle, params,
+						  SND_PCM_ACCESS_RW_INTERLEAVED);
+
+	 /* Signed 16-bit little-endian format */
+	snd_pcm_hw_params_set_format(m_handle, params,
+								  SND_PCM_FORMAT_S16_LE);
+
+	 /* Two channels (stereo) */
+	snd_pcm_hw_params_set_channels(m_handle, params, m_nChannels);
+
+	 /* 44100 sampling rate (CD quality) */
+	//val = m_sample_rate;
+	snd_pcm_hw_params_set_rate_near(m_handle, params, &m_sample_rate, &dir);
+	LOGD(g_debuglog, "m_sample_rate is %d!", m_sample_rate);
+	
+	/* Set period size to 2048 frames. */
+	//frames = m_nMaxInputBytes / ((m_nPCMBitSize/8) * m_nChannels);
+	//m_frames_fact = m_frames;
+	//LOGD(g_debuglog, "m_frames is %d!", m_frames);
+	
+	snd_pcm_hw_params_set_period_size_near(m_handle,
+								  params, &m_frames, &dir);
+	LOGD(g_debuglog, "m_frames_fact is %d!", m_frames);
+	int nPCMBytes = m_frames * ((m_nPCMBitSize/8) * m_nChannels);
+	
+	m_out_.data_ = malloc(nPCMBytes);
+	m_out_.len_ = nPCMBytes;
+	m_pbPCMBuffer = new BYTE [nPCMBytes];
+	
+	/* Write the parameters to the driver */
+	rc = snd_pcm_hw_params(m_handle, params);
+	if (rc < 0) {
+		LOGD(g_debuglog, "unable to set hw parameters: %s", snd_strerror(rc));
+		::exit(1);
+	}
 
 
 }
@@ -486,35 +549,58 @@ void CAlsaCapture::run(void)
 	long long timestamp = 0;
 	struct timeval tv;
 	struct timezone tz;
+	int nFramesRead;
 	int nBytesRead;
 	//static int cont = 0;
 	//static bool en = false;
+	//snd_pcm_uframes_t frames = m_nMaxInputBytes / ((16/8) * m_nChannels);
 	while(m_mstart){
 	
 		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
 		LOGD(g_debuglog, "CAlsaCapture::run!");
-		LOGD(g_debuglog, "m_nMaxInputBytes is: %d", m_nMaxInputBytes);
+		//LOGD(g_debuglog, "m_nMaxInputBytes is: %d", m_nMaxInputBytes);
 		
-		nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
-		/*
-		cont++;
-		if (cont > 5) en = true;
+		//nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
 		
-		if(en)
-		{
-			ost::MutexLock al(g_ptsfifo->cs_fifo_);
-			gettimeofday (&tv, &tz);
-			timestamp = (tv.tv_sec - g_starttime)*1000000 + tv.tv_usec;	//usec
-			g_ptsfifo->fifo_.push_back(timestamp);
-			LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
-			g_ptsfifo->sem_fifo_.post();
+		//LOGD(g_debuglog, "m_frames_fact is: %d", m_frames_fact);
+		nFramesRead = snd_pcm_readi(m_handle, m_pbPCMBuffer, m_frames);
+		LOGD(g_debuglog, "nFramesRead is: %d", nFramesRead);
+		
+		if (nFramesRead == -EPIPE) {
+			/* EPIPE means overrun */
+			//LOGD(g_debuglog, "overrun occurred");
+			fprintf(stderr, "overrun occurred!!\n");
+			snd_pcm_prepare(m_handle);
+			//::exit(1);
+			continue;
+		} else if (nFramesRead < 0) {
+			LOGD(g_debuglog, "error from read: %s", snd_strerror(nFramesRead));
+			continue;
+		} else if (nFramesRead != (int)m_frames) {
+			LOGD(g_debuglog, "short read, read: %d", nFramesRead);
 		}
-		*/
-		{
+		
+		nBytesRead = nFramesRead * ((m_nPCMBitSize/8) * m_nChannels);
+		LOGD(g_debuglog, "nBytesRead: %d", nBytesRead);
+		LOGD(g_debuglog, "m_nMaxPushBytes: %d", m_nMaxPushBytes);
+
+		if (nBytesRead <= m_nMaxPushBytes) {
 			ost::MutexLock al(m_cs_fifo_);
-			LOGD(g_debuglog, "nBytesRead: %d", nBytesRead);
 			m_fifo_.push_back(slice_alloc(m_pbPCMBuffer, nBytesRead, timestamp, 0));
-			LOGD(g_debuglog, "pcm data and pts push: %lld.", timestamp);
+			LOGD(g_debuglog, "pcm data and pts push!!");
+			m_sem_fifo_.post();
+		}
+		else {
+			int num = nBytesRead / m_nMaxPushBytes;
+			int mod = nBytesRead % m_nMaxPushBytes;
+			LOGD(g_debuglog, "num:%d, mod:%d", num, mod);
+			ost::MutexLock al(m_cs_fifo_);
+			int i;
+			for (i=0; i<num; i++){
+				m_fifo_.push_back(slice_alloc(m_pbPCMBuffer, m_nMaxPushBytes, timestamp, 0));
+			}
+			m_fifo_.push_back(slice_alloc(m_pbPCMBuffer+m_nMaxPushBytes*i, mod, timestamp, 0));
+			LOGD(g_debuglog, "pcm data and pts push x %d!!", i+1);
 			m_sem_fifo_.post();
 		}
 	
@@ -525,7 +611,6 @@ void CAlsaCapture::run(void)
 
 CAacEncoder::CAacEncoder()
 {
-	m_buffer_frames =  128;
 	//m_rate = 11025;
 	m_rate = 44100;
 	m_format = SND_PCM_FORMAT_S16_LE;
@@ -553,85 +638,6 @@ CAacEncoder::~CAacEncoder()
 		delete m_alsacap;
 }
 
-#if 0
-int CAacEncoder::AlsaInit(void)
-{
-
-	int i;
-	int err;
-	if ((err = snd_pcm_open (&capture_handle, argv[1], SND_PCM_STREAM_CAPTURE, 0)) < 0) {
-		fprintf (stderr, "cannot open audio device %s (%s)\n", 
-				argv[1],
-				snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "audio interface opened\n");
-		   
-	if ((err = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
-		fprintf (stderr, "cannot allocate hardware parameter structure (%s)\n",
-             snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "hw_params allocated\n");
-	
-	if ((err = snd_pcm_hw_params_any (capture_handle, hw_params)) < 0) {
-		fprintf (stderr, "cannot initialize hardware parameter structure (%s)\n",
-             snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "hw_params initialized\n");
-	
-	if ((err = snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
-		fprintf (stderr, "cannot set access type (%s)\n",
-             snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "hw_params access setted\n");
-	
-	if ((err = snd_pcm_hw_params_set_format (capture_handle, hw_params, format)) < 0) {
-		fprintf (stderr, "cannot set sample format (%s)\n",
-             snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "hw_params format setted\n");
-	
-	if ((err = snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &rate, 0)) < 0) {
-		fprintf (stderr, "cannot set sample rate (%s)\n",
-             snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "hw_params rate setted\n");
- 
-	if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) {
-		fprintf (stderr, "cannot set channel count (%s)\n",
-             snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "hw_params channels setted\n");
-	
-	if ((err = snd_pcm_hw_params (capture_handle, hw_params)) < 0) {
-		fprintf (stderr, "cannot set parameters (%s)\n",
-             snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "hw_params setted\n");
-	
-	snd_pcm_hw_params_free (hw_params);
-	
-	fprintf(stdout, "hw_params freed\n");
-	
-	if ((err = snd_pcm_prepare (capture_handle)) < 0) {
-		fprintf (stderr, "cannot prepare audio interface for use (%s)\n",
-             snd_strerror (err));
-		exit (1);
-	}
-	fprintf(stdout, "audio interface prepared\n");
-
-	return 0;
-
-}
-#endif
-
 int CAacEncoder::FaacInit(void)
 {
 	int nRet;
@@ -642,7 +648,14 @@ int CAacEncoder::FaacInit(void)
 	m_hEncoder = faacEncOpen(m_rate, m_nChannels, &m_nInputSamples, &m_nMaxOutputBytes);//初始化aac句柄，同时获取最大输入样本，及编码所需最小字节
 	
 	m_nMaxInputBytes=m_nInputSamples * m_nPCMBitSize / 8;//计算最大输入字节,跟据最大输入样本数
-	m_alsacap = new CAlsaCapture(m_nMaxInputBytes);
+	
+	alsa_cfg_t cfg;
+	cfg.nPCMBitSize = m_nPCMBitSize;
+	cfg.nChannels = m_nChannels;
+	cfg.sample_rate = m_rate;
+	cfg.nMaxInputBytes = m_nMaxInputBytes;
+	
+	m_alsacap = new CAlsaCapture(&cfg);
 	
 	printf("m_nInputSamples:%d m_nMaxInputBytes:%d m_nMaxOutputBytes:%d\n", m_nInputSamples, m_nMaxInputBytes,m_nMaxOutputBytes);
     
@@ -657,9 +670,11 @@ int CAacEncoder::FaacInit(void)
 	
 	// (2.1) Get current encoding configuration
 	m_pConfiguration = faacEncGetCurrentConfiguration(m_hEncoder);//获取配置结构指针
+	m_pConfiguration->allowMidside	=true;
 	m_pConfiguration->inputFormat = FAAC_INPUT_16BIT;
-	m_pConfiguration->outputFormat=1;
-	m_pConfiguration->useTns=true;
+	m_pConfiguration->outputFormat=true;
+	m_pConfiguration->mpegVersion=MPEG4;
+	m_pConfiguration->useTns=0;
 	m_pConfiguration->useLfe=false;
 	m_pConfiguration->aacObjectType=LOW;
 	m_pConfiguration->shortctl=SHORTCTL_NORMAL;
@@ -714,10 +729,15 @@ int CAacEncoder::Encode(void)
 		static bool en = false;
 		slice_t* pcmdata;
 		
-		LOGD(g_debuglog, "get pcmdata start.");
+		//LOGD(g_debuglog, "get pcmdata start.");
 		pcmdata = GetPCM();
+		LOGD(g_debuglog, "get pcmdata done.");
 		cont++;
 		if (cont > 5) en = true;
+		
+		// 输入样本数，用实际读入字节数计算
+		nInputSamples = pcmdata->len_ / (m_nPCMBitSize / 8) * m_nChannels;
+		LOGD(g_debuglog, "nInputSamples is %d.", nInputSamples);
 		
 		if(en)
 		{
@@ -728,12 +748,7 @@ int CAacEncoder::Encode(void)
 			LOGD(g_debuglog, "aac pts push: %lld.", timestamp);
 			g_ptsfifo->sem_fifo_.post();
 		}
-		
-		LOGD(g_debuglog, "get pcmdata done.");
 
-		// 输入样本数，用实际读入字节数计算
-		nInputSamples = pcmdata->len_ / (m_nPCMBitSize / 8);
-		LOGD(g_debuglog, "nInputSamples is %d.", nInputSamples);
 		// (3) Encode
 		nRet = faacEncEncode(m_hEncoder, (int*) pcmdata->data_, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
 		LOGD(g_debuglog, "faacEncEncode done.");
@@ -750,7 +765,7 @@ int CAacEncoder::Encode(void)
 			//else 
 			//	g_av_map->map_.insert(std::map<long long, slice_t*>::value_type(pcmdata->pts_, &dummydata));
 			
-			LOGD(g_debuglog, "aac map insert!! nRet:%d. pts_:%lld", nRet, pcmdata->pts_);
+			LOGD(g_debuglog, "aac map insert!! nRet:%d. pts_:%lld", nRet, timestamp);
 			g_av_map->sem_map_.post();
 			
 			fwrite(m_pbAACBuffer, 1, nRet, m_fpAacOut);
@@ -787,11 +802,6 @@ m_nCurPos(0)
 	m_venc_cam_cxt = NULL;
 	m_alsa_enc = NULL;
 	
-	if(bEncode){
-		m_venc_cam_cxt = new CCapEncoder();
-		m_alsa_enc = new CAacEncoder();
-	}
-
 	g_av_map = new AVmap_t;
 	g_av_map->outbuf_ = malloc(128*2048);
 	g_av_map->outbuf_size_ = 128*2048;
@@ -802,6 +812,12 @@ m_nCurPos(0)
     struct timezone tz;
     gettimeofday (&tv, &tz);
 	g_starttime = tv.tv_sec;
+	
+	if(bEncode){
+		m_venc_cam_cxt = new CCapEncoder();
+		m_alsa_enc = new CAacEncoder();
+	}
+	
 }
 
 CRTMPStream::~CRTMPStream(void)
@@ -1017,24 +1033,6 @@ bool CRTMPStream::SendH264Packet(unsigned char *data,unsigned int size,bool bIsK
 
 bool CRTMPStream::SendCapEncode(void)
 {
-/*
-	if(pFileName == NULL)
-	{
-		return FALSE;
-	}
-	FILE *fp = fopen(pFileName, "rb");  
-	if(!fp)  
-	{  
-		printf("ERROR:open file %s failed!",pFileName);
-	}  
-	fseek(fp, 0, SEEK_SET);
-	m_nFileBufSize = fread(m_pFileBuf, sizeof(unsigned char), FILEBUFSIZE, fp);
-	if(m_nFileBufSize >= FILEBUFSIZE)
-	{
-		printf("warning : File size is larger than BUFSIZE\n");
-	}
-	fclose(fp);  
-*/
 	RTMPMetadata metaData;
 	memset(&metaData,0,sizeof(RTMPMetadata));
 
@@ -1078,14 +1076,14 @@ bool CRTMPStream::SendCapEncode(void)
 			bool nRet = SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_VIDEO send.");
 			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
-			if (!nRet) exit(0);
+			if (!nRet) ::exit(0);
 		}
 		else if (naluUnit.pkt_type == RTMP_PACKET_TYPE_AUDIO){
 			// 发送AAC数据
 			bool nRet = SendAacPacket(naluUnit.data, naluUnit.size, naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_AUDIO send.");
 			LOGD(g_debuglog, "naluUnit.pts:%u.", naluUnit.pts);
-			if (!nRet) exit(0);
+			if (!nRet) ::exit(0);
 		}
 
 		
