@@ -464,6 +464,7 @@ CAlsaCapture::CAlsaCapture(alsa_cfg_t* cfg)
 	
 	m_frames = m_nMaxPushBytes / ((m_nPCMBitSize/8) * m_nChannels);
 	
+	
 	//m_out_.data_ = malloc(m_nMaxInputBytes);
 	//m_out_.len_ = m_nMaxInputBytes;
 	
@@ -748,7 +749,7 @@ int CAacEncoder::Encode(void)
 		if (cont > 5) en = true;
 		
 		// 输入样本数，用实际读入字节数计算
-		nInputSamples = pcmdata->len_ / (m_nPCMBitSize / 8) * m_nChannels;
+		nInputSamples = pcmdata->len_ / (m_nPCMBitSize / 8);
 		LOGD(g_debuglog, "nInputSamples is %d.", nInputSamples);
 		
 		if(en)
