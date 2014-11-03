@@ -462,9 +462,15 @@ CAlsaCapture::CAlsaCapture(alsa_cfg_t* cfg)
 	m_sample_rate = cfg->sample_rate;
 	m_nPCMBitSize = cfg->nPCMBitSize;
 	
-	m_frames = m_nMaxPushBytes / ((m_nPCMBitSize/8) * m_nChannels);
+	//m_frames = m_nMaxPushBytes / ((m_nPCMBitSize/8) * m_nChannels);
+	m_frames = 128;
+	/*
+	int nPCMBytes = m_frames * ((m_nPCMBitSize/8) * m_nChannels);
 	
-	
+	m_out_.data_ = malloc(nPCMBytes);
+	m_out_.len_ = nPCMBytes;
+	m_pbPCMBuffer = new BYTE [nPCMBytes];
+	*/
 	//m_out_.data_ = malloc(m_nMaxInputBytes);
 	//m_out_.len_ = m_nMaxInputBytes;
 	
@@ -494,7 +500,7 @@ int CAlsaCapture::AlsaInit(void)
 	unsigned int val;
 	int dir;
 	/* Open PCM device for recording (capture). */
-	rc = snd_pcm_open(&m_handle, "default",
+	rc = snd_pcm_open(&m_handle, "hw:0",
 						SND_PCM_STREAM_CAPTURE, 0);
 	if (rc < 0) {
 		//LOGD(g_debuglog, "unable to open pcm device: %s", snd_strerror(rc));
@@ -503,7 +509,8 @@ int CAlsaCapture::AlsaInit(void)
 	}
 
 	 /* Allocate a hardware parameters object. */
-	snd_pcm_hw_params_alloca(&params);
+	//snd_pcm_hw_params_alloca(&params);
+	snd_pcm_hw_params_malloc(&params);
 
 	 /* Fill it in with default values. */
 	snd_pcm_hw_params_any(m_handle, params);
@@ -513,27 +520,31 @@ int CAlsaCapture::AlsaInit(void)
 	 /* Interleaved mode */
 	snd_pcm_hw_params_set_access(m_handle, params,
 						  SND_PCM_ACCESS_RW_INTERLEAVED);
+						  //SND_PCM_ACCESS_RW_INTERLEAVED);
 
 	 /* Signed 16-bit little-endian format */
 	snd_pcm_hw_params_set_format(m_handle, params,
 								  SND_PCM_FORMAT_S16_LE);
-
+	
+	
+	/* 44100 sampling rate (CD quality) */
+	//val = m_sample_rate;
+	snd_pcm_hw_params_set_rate_near(m_handle, params, &m_sample_rate, 0);
+	LOGD(g_debuglog, "m_sample_rate is %d!", m_sample_rate);
+	
 	 /* Two channels (stereo) */
 	snd_pcm_hw_params_set_channels(m_handle, params, m_nChannels);
 
-	 /* 44100 sampling rate (CD quality) */
-	//val = m_sample_rate;
-	snd_pcm_hw_params_set_rate_near(m_handle, params, &m_sample_rate, &dir);
-	LOGD(g_debuglog, "m_sample_rate is %d!", m_sample_rate);
-	
 	/* Set period size to 2048 frames. */
 	//frames = m_nMaxInputBytes / ((m_nPCMBitSize/8) * m_nChannels);
 	//m_frames_fact = m_frames;
 	//LOGD(g_debuglog, "m_frames is %d!", m_frames);
-	
+	/*
 	snd_pcm_hw_params_set_period_size_near(m_handle,
 								  params, &m_frames, &dir);
+	*/
 	LOGD(g_debuglog, "m_frames is %d!", m_frames);
+	
 	int nPCMBytes = m_frames * ((m_nPCMBitSize/8) * m_nChannels);
 	
 	m_out_.data_ = malloc(nPCMBytes);
@@ -547,8 +558,9 @@ int CAlsaCapture::AlsaInit(void)
 		fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
 		::exit(1);
 	}
-
-
+	
+	snd_pcm_hw_params_free (params);
+	
 }
 
 void CAlsaCapture::run(void)
@@ -562,7 +574,7 @@ void CAlsaCapture::run(void)
 	//static bool en = false;
 	//snd_pcm_uframes_t frames = m_nMaxInputBytes / ((16/8) * m_nChannels);
 	
-	m_fpPcm =  fopen("./dump.pcm", "wb");
+	m_fpPcm =  fopen("./fifo.pcm", "wb");
 	
 	while(m_mstart){
 	
@@ -573,8 +585,10 @@ void CAlsaCapture::run(void)
 		//nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, m_fpWavIn);
 		
 		//LOGD(g_debuglog, "m_frames_fact is: %d", m_frames_fact);
-		nFramesRead = snd_pcm_readi(m_handle, m_pbPCMBuffer, m_frames);
+		//m_cs_read.enter();
+		nFramesRead = snd_pcm_readi(m_handle, (void*)m_pbPCMBuffer, m_frames);
 		LOGD(g_debuglog, "nFramesRead is: %d", nFramesRead);
+		//m_cs_read.leave();
 		
 		if (nFramesRead == -EPIPE) {
 			/* EPIPE means overrun */
@@ -596,7 +610,7 @@ void CAlsaCapture::run(void)
 		LOGD(g_debuglog, "m_nMaxPushBytes: %d", m_nMaxPushBytes);
 		
 		fwrite(m_pbPCMBuffer, 1, nBytesRead, m_fpPcm);
-		
+		/*
 		if (nBytesRead <= m_nMaxPushBytes) {
 			ost::MutexLock al(m_cs_fifo_);
 			m_fifo_.push_back(slice_alloc(m_pbPCMBuffer, nBytesRead, timestamp, 0));
@@ -616,7 +630,7 @@ void CAlsaCapture::run(void)
 			LOGD(g_debuglog, "pcm data and pts push x %d!!", i+1);
 			m_sem_fifo_.post();
 		}
-	
+		*/
 	//usleep(5*1000);
 	}
 
@@ -644,7 +658,10 @@ CAacEncoder::~CAacEncoder()
 	// (4) Close FAAC engine
 	int nRet;
     nRet = faacEncClose(m_hEncoder);
+	
     delete[] m_pbAACBuffer;
+	delete[] m_pbPCMBuffer;
+	
 	fclose(m_fpAacOut);
 	
 	if(m_alsacap)
@@ -678,7 +695,7 @@ int CAacEncoder::FaacInit(void)
         return -1;
     }
 	
-	//m_pbPCMBuffer = new BYTE [m_nMaxInputBytes];
+	m_pbPCMBuffer = new BYTE [m_nMaxInputBytes];
 	m_pbAACBuffer = new BYTE [m_nMaxOutputBytes];
 	
 	// (2.1) Get current encoding configuration
@@ -736,6 +753,7 @@ int CAacEncoder::Encode(void)
 	struct timeval tv;
 	struct timezone tz;
 	faacEncGetDecoderSpecificInfo(m_hEncoder, &m_enc_spec_buf, (long unsigned int*)&m_enc_spec_len);
+	FILE* fpPcm =  fopen("./fifo.pcm", "rb");
 	while(m_mstart){
 		
 		static int cont = 0;
@@ -743,13 +761,18 @@ int CAacEncoder::Encode(void)
 		slice_t* pcmdata;
 		
 		//LOGD(g_debuglog, "get pcmdata start.");
-		pcmdata = GetPCM();
-		LOGD(g_debuglog, "get pcmdata done.");
+		//pcmdata = GetPCM();
+		//LOGD(g_debuglog, "get pcmdata done.");
+		
+		LOGD(g_debuglog, "pcmfifo fread start!!");
+		nBytesRead = fread(m_pbPCMBuffer, 1, m_nMaxInputBytes, fpPcm);
+		
 		cont++;
 		if (cont > 5) en = true;
 		
 		// 输入样本数，用实际读入字节数计算
-		nInputSamples = pcmdata->len_ / (m_nPCMBitSize / 8);
+		//nInputSamples = pcmdata->len_ / (m_nPCMBitSize / 8);
+		nInputSamples = nBytesRead / (m_nPCMBitSize / 8);
 		LOGD(g_debuglog, "nInputSamples is %d.", nInputSamples);
 		
 		if(en)
@@ -763,8 +786,11 @@ int CAacEncoder::Encode(void)
 		}
 
 		// (3) Encode
-		nRet = faacEncEncode(m_hEncoder, (int*) pcmdata->data_, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
+		//m_alsacap->m_cs_read.enter();
+		//nRet = faacEncEncode(m_hEncoder, (int*) pcmdata->data_, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
+		nRet = faacEncEncode(m_hEncoder, (int*) m_pbPCMBuffer, nInputSamples, m_pbAACBuffer, m_nMaxOutputBytes);
 		LOGD(g_debuglog, "faacEncEncode done.");
+		//m_alsacap->m_cs_read.leave();
 		//cont++;
 		//if (cont > 5) en = true;
 		//usleep(70*1000);

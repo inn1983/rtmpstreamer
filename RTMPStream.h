@@ -146,10 +146,13 @@ public:
 	ost::Mutex m_cs_fifo_;	
 	ost::Semaphore m_sem_fifo_;
 	slice_t m_out_;
-
+	
+	ost::Mutex m_cs_read;
+	
+	FILE* m_fpPcm;
 private:
 	FILE* m_fpWavIn;
-	FILE* m_fpPcm;
+	
 	snd_pcm_t* m_handle;
 	snd_pcm_uframes_t m_frames;
 	//snd_pcm_uframes_t m_frames_fact;
@@ -195,7 +198,7 @@ private:
 	
 	faacEncHandle m_hEncoder;		//aac handler
 	faacEncConfigurationPtr m_pConfiguration;//aac设置指针
-	//unsigned char* m_pbPCMBuffer;
+	unsigned char* m_pbPCMBuffer;
     unsigned char* m_pbAACBuffer;
 	//unsigned long m_nPCMBufferSize;
 	unsigned long m_nInputSamples;
