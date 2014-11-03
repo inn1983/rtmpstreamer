@@ -149,6 +149,7 @@ public:
 
 private:
 	FILE* m_fpWavIn;
+	FILE* m_fpPcm;
 	snd_pcm_t* m_handle;
 	snd_pcm_uframes_t m_frames;
 	//snd_pcm_uframes_t m_frames_fact;

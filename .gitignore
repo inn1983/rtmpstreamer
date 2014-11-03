@@ -1,5 +1,7 @@
 *.o
 rtmp_streamer
 *.aac
+*.wav
+*.pcm
 error.log
 debug.log

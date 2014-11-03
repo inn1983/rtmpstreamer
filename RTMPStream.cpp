@@ -414,7 +414,8 @@ int CCapEncoder::Encode(void)
 		
 		if (result != 0) {
 			usleep(10000);
-			printf("not encode, ret: %d\n", result);
+			//printf("not encode, ret: %d\n", result);
+			fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
 			::exit(-1);
 		}
 		
@@ -476,10 +477,13 @@ CAlsaCapture::~CAlsaCapture()
 {	
 	m_mstart = 0;
 	join();
+	snd_pcm_drain(m_handle);
+	snd_pcm_close(m_handle);
 	delete[] m_pbPCMBuffer;
 	free(m_out_.data_);
 	
 	fclose(m_fpWavIn);
+	fclose(m_fpPcm);
 }
 
 int CAlsaCapture::AlsaInit(void)
@@ -492,7 +496,8 @@ int CAlsaCapture::AlsaInit(void)
 	rc = snd_pcm_open(&m_handle, "default",
 						SND_PCM_STREAM_CAPTURE, 0);
 	if (rc < 0) {
-		LOGD(g_debuglog, "unable to open pcm device: %s", snd_strerror(rc));
+		//LOGD(g_debuglog, "unable to open pcm device: %s", snd_strerror(rc));
+		fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
 		::exit(1);
 	}
 
@@ -527,7 +532,7 @@ int CAlsaCapture::AlsaInit(void)
 	
 	snd_pcm_hw_params_set_period_size_near(m_handle,
 								  params, &m_frames, &dir);
-	LOGD(g_debuglog, "m_frames_fact is %d!", m_frames);
+	LOGD(g_debuglog, "m_frames is %d!", m_frames);
 	int nPCMBytes = m_frames * ((m_nPCMBitSize/8) * m_nChannels);
 	
 	m_out_.data_ = malloc(nPCMBytes);
@@ -538,6 +543,7 @@ int CAlsaCapture::AlsaInit(void)
 	rc = snd_pcm_hw_params(m_handle, params);
 	if (rc < 0) {
 		LOGD(g_debuglog, "unable to set hw parameters: %s", snd_strerror(rc));
+		fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
 		::exit(1);
 	}
 
@@ -554,6 +560,9 @@ void CAlsaCapture::run(void)
 	//static int cont = 0;
 	//static bool en = false;
 	//snd_pcm_uframes_t frames = m_nMaxInputBytes / ((16/8) * m_nChannels);
+	
+	m_fpPcm =  fopen("./dump.pcm", "wb");
+	
 	while(m_mstart){
 	
 		// 读入的实际字节数，最大不会超过m_nMaxInputBytes，一般只有读到文件尾时才不是m_nMaxInputBytes
@@ -570,6 +579,7 @@ void CAlsaCapture::run(void)
 			/* EPIPE means overrun */
 			//LOGD(g_debuglog, "overrun occurred");
 			fprintf(stderr, "overrun occurred!!\n");
+			fprintf(stderr, "time:%s, line:%d ::overrun occurred!!\n",__TIME__, __LINE__);
 			snd_pcm_prepare(m_handle);
 			//::exit(1);
 			continue;
@@ -583,7 +593,9 @@ void CAlsaCapture::run(void)
 		nBytesRead = nFramesRead * ((m_nPCMBitSize/8) * m_nChannels);
 		LOGD(g_debuglog, "nBytesRead: %d", nBytesRead);
 		LOGD(g_debuglog, "m_nMaxPushBytes: %d", m_nMaxPushBytes);
-
+		
+		fwrite(m_pbPCMBuffer, 1, nBytesRead, m_fpPcm);
+		
 		if (nBytesRead <= m_nMaxPushBytes) {
 			ost::MutexLock al(m_cs_fifo_);
 			m_fifo_.push_back(slice_alloc(m_pbPCMBuffer, nBytesRead, timestamp, 0));
@@ -670,11 +682,11 @@ int CAacEncoder::FaacInit(void)
 	
 	// (2.1) Get current encoding configuration
 	m_pConfiguration = faacEncGetCurrentConfiguration(m_hEncoder);//获取配置结构指针
-	m_pConfiguration->allowMidside	=true;
+	//m_pConfiguration->allowMidside	=true;
 	m_pConfiguration->inputFormat = FAAC_INPUT_16BIT;
 	m_pConfiguration->outputFormat=true;
 	m_pConfiguration->mpegVersion=MPEG4;
-	m_pConfiguration->useTns=0;
+	m_pConfiguration->useTns=true;
 	m_pConfiguration->useLfe=false;
 	m_pConfiguration->aacObjectType=LOW;
 	m_pConfiguration->shortctl=SHORTCTL_NORMAL;
@@ -1076,14 +1088,21 @@ bool CRTMPStream::SendCapEncode(void)
 			bool nRet = SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_VIDEO send.");
 			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
-			if (!nRet) ::exit(0);
+			
+			if (!nRet) {
+				fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
+				::exit(0);
+			}
 		}
 		else if (naluUnit.pkt_type == RTMP_PACKET_TYPE_AUDIO){
 			// 发送AAC数据
 			bool nRet = SendAacPacket(naluUnit.data, naluUnit.size, naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_AUDIO send.");
 			LOGD(g_debuglog, "naluUnit.pts:%u.", naluUnit.pts);
-			if (!nRet) ::exit(0);
+			if (!nRet) {
+				fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
+				::exit(0);
+			}
 		}
 
 		
