@@ -233,6 +233,7 @@ public:
 	int SendAacPacket(unsigned char *data, unsigned int size, unsigned long pts);
 	
 	//time_t m_starttime;
+	const char* m_serverurl;
 private:
 	// 送缓存中读取一个NALU包
 	bool ReadOneNaluFromBuf_enc(NaluUnit &nalu);

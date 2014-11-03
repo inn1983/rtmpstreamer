@@ -32,6 +32,7 @@ slice_t dummydata = {NULL, 0, 0, 0};
 FILE* g_debuglog = NULL;
 
 long long g_starttime = 0;
+bool g_time_reset = 0;
 
 
 enum
@@ -463,7 +464,7 @@ CAlsaCapture::CAlsaCapture(alsa_cfg_t* cfg)
 	m_nPCMBitSize = cfg->nPCMBitSize;
 	
 	//m_frames = m_nMaxPushBytes / ((m_nPCMBitSize/8) * m_nChannels);
-	m_frames = 128;
+	m_frames = 2048;
 	/*
 	int nPCMBytes = m_frames * ((m_nPCMBitSize/8) * m_nChannels);
 	
@@ -575,6 +576,7 @@ void CAlsaCapture::run(void)
 	//snd_pcm_uframes_t frames = m_nMaxInputBytes / ((16/8) * m_nChannels);
 	
 	m_fpPcm =  fopen("./fifo.pcm", "wb");
+	//FILE* fpPcmDump =  fopen("./PcmDump.pcm", "wb");
 	
 	while(m_mstart){
 	
@@ -610,6 +612,7 @@ void CAlsaCapture::run(void)
 		LOGD(g_debuglog, "m_nMaxPushBytes: %d", m_nMaxPushBytes);
 		
 		fwrite(m_pbPCMBuffer, 1, nBytesRead, m_fpPcm);
+		//fwrite(m_pbPCMBuffer, 1, nBytesRead, fpPcmDump);
 		/*
 		if (nBytesRead <= m_nMaxPushBytes) {
 			ost::MutexLock al(m_cs_fifo_);
@@ -889,6 +892,7 @@ bool CRTMPStream::Connect(const char* url)
 {
 	int ret;
 	LOGD(g_debuglog, "CRTMPStream::Connect start!.");
+	m_serverurl = url;
 	ret = RTMP_SetupURL(m_pRtmp, (char*)url);
 	if(ret < 0)
 	{
@@ -1100,7 +1104,8 @@ bool CRTMPStream::SendCapEncode(void)
 
 	unsigned int tick = 0x00ff0000;
 	unsigned int cont = 0;
-	int ret;
+	int ret = 0;
+	bool bRet = 0;
 	//unsigned int tick = 0;
 	//while(ReadOneNaluFromBuf(naluUnit))
 	while(ret = get_next_slice(naluUnit))
@@ -1112,25 +1117,42 @@ bool CRTMPStream::SendCapEncode(void)
 		else if (naluUnit.pkt_type == RTMP_PACKET_TYPE_VIDEO){
 			bool bKeyframe  = (naluUnit.frame_type == 0x05) ? TRUE : FALSE;
 			// 发送H264数据帧
-			bool nRet = SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
+			bRet = SendH264Packet(naluUnit.data,naluUnit.size,bKeyframe,naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_VIDEO send.");
 			LOGD(g_debuglog, "naluUnit.size:%d, bKeyframe:%d, naluUnit.pts:%u.", naluUnit.size, bKeyframe, naluUnit.pts);
 			
-			if (!nRet) {
-				fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
-				::exit(0);
-			}
+
 		}
 		else if (naluUnit.pkt_type == RTMP_PACKET_TYPE_AUDIO){
 			// 发送AAC数据
-			bool nRet = SendAacPacket(naluUnit.data, naluUnit.size, naluUnit.pts);
+			bRet = SendAacPacket(naluUnit.data, naluUnit.size, naluUnit.pts);
 			LOGD(g_debuglog, "RTMP_PACKET_TYPE_AUDIO send.");
 			LOGD(g_debuglog, "naluUnit.pts:%u.", naluUnit.pts);
-			if (!nRet) {
-				fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
-				::exit(0);
-			}
 		}
+		
+		if (!bRet) {
+			fprintf(stderr, "time:%s, line:%d ::Send error!!\n",__TIME__, __LINE__);
+			while(1){
+				LOGD(g_debuglog, "Rtmp restart !!");
+				struct timeval tv;
+				struct timezone tz;
+				gettimeofday (&tv, &tz);
+				g_starttime = tv.tv_sec;
+				
+				if (Connect(m_serverurl) == true)
+				{
+					SendMetadata(&metaData);
+					for (int i=0; i<5; i++)	{
+						get_next_slice(naluUnit);
+					}
+					break;
+				}
+				
+				msleep(100);
+			}
+			//::exit(0);
+		}
+		
 
 		
 
