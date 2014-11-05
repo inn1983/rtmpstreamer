@@ -415,8 +415,11 @@ int CCapEncoder::Encode(void)
 		
 		if (result != 0) {
 			usleep(10000);
-			//printf("not encode, ret: %d\n", result);
-			fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
+			
+			time_t t = time(0);
+			char tmp[64];
+			strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S_log.txt", localtime(&t) ); //格式化输出.
+			fprintf(stderr, "time:%s, line:%d ::exit!!\n", tmp, __LINE__);
 			::exit(-1);
 		}
 		
@@ -464,7 +467,7 @@ CAlsaCapture::CAlsaCapture(alsa_cfg_t* cfg)
 	m_nPCMBitSize = cfg->nPCMBitSize;
 	
 	//m_frames = m_nMaxPushBytes / ((m_nPCMBitSize/8) * m_nChannels);
-	m_frames = 2048;
+	m_frames = 1024;
 	/*
 	int nPCMBytes = m_frames * ((m_nPCMBitSize/8) * m_nChannels);
 	
@@ -505,7 +508,10 @@ int CAlsaCapture::AlsaInit(void)
 						SND_PCM_STREAM_CAPTURE, 0);
 	if (rc < 0) {
 		//LOGD(g_debuglog, "unable to open pcm device: %s", snd_strerror(rc));
-		fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
+		time_t t = time(0);
+		char tmp[64];
+		strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S_log.txt", localtime(&t) ); //格式化输出.
+		fprintf(stderr, "time:%s, line:%d ::exit!!\n", tmp, __LINE__);
 		::exit(1);
 	}
 
@@ -556,7 +562,11 @@ int CAlsaCapture::AlsaInit(void)
 	rc = snd_pcm_hw_params(m_handle, params);
 	if (rc < 0) {
 		LOGD(g_debuglog, "unable to set hw parameters: %s", snd_strerror(rc));
-		fprintf(stderr, "time:%s, line:%d ::exit!!\n",__TIME__, __LINE__);
+		
+		time_t t = time(0);
+		char tmp[64];
+		strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S_log.txt", localtime(&t) ); //格式化输出.
+		fprintf(stderr, "time:%s, line:%d ::exit!!\n", tmp, __LINE__);
 		::exit(1);
 	}
 	
@@ -595,8 +605,12 @@ void CAlsaCapture::run(void)
 		if (nFramesRead == -EPIPE) {
 			/* EPIPE means overrun */
 			//LOGD(g_debuglog, "overrun occurred");
+			
+			time_t t = time(0);
+			char tmp[64];
+			strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S_log.txt", localtime(&t) ); //格式化输出.
 			fprintf(stderr, "overrun occurred!!\n");
-			fprintf(stderr, "time:%s, line:%d ::overrun occurred!!\n",__TIME__, __LINE__);
+			fprintf(stderr, "time:%s, line:%d ::overrun occurred!!\n",tmp , __LINE__);
 			snd_pcm_prepare(m_handle);
 			//::exit(1);
 			continue;
@@ -642,9 +656,9 @@ void CAlsaCapture::run(void)
 CAacEncoder::CAacEncoder()
 {
 	//m_rate = 11025;
-	m_rate = 44100;
+	m_rate = 22050;
 	m_format = SND_PCM_FORMAT_S16_LE;
-	m_nChannels = 1;
+	m_nChannels = 2;
 	m_nPCMBitSize = 16;
 	
 	//AlsaInit();
@@ -1131,18 +1145,24 @@ bool CRTMPStream::SendCapEncode(void)
 		}
 		
 		if (!bRet) {
-			fprintf(stderr, "time:%s, line:%d ::Send error!!\n",__TIME__, __LINE__);
+			struct timeval tv;
+			struct timezone tz;
+			gettimeofday (&tv, &tz);
+			g_starttime = tv.tv_sec;
+			
+			time_t t = time(0);
+			char tmp[64];
+			strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S_log.txt", localtime(&t) ); //格式化输出.
+			fprintf(stderr, "time:%s, line:%d ::Send error!!\n", tmp, __LINE__);
+			
 			while(1){
 				LOGD(g_debuglog, "Rtmp restart !!");
-				struct timeval tv;
-				struct timezone tz;
-				gettimeofday (&tv, &tz);
-				g_starttime = tv.tv_sec;
+
 				
 				if (Connect(m_serverurl) == true)
 				{
 					SendMetadata(&metaData);
-					for (int i=0; i<5; i++)	{
+					for (int i=0; i<7; i++)	{
 						get_next_slice(naluUnit);
 					}
 					break;
