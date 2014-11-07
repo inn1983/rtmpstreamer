@@ -824,7 +824,7 @@ int CAacEncoder::Encode(void)
 			LOGD(g_debuglog, "aac map insert!! nRet:%d. pts_:%lld", nRet, timestamp);
 			g_av_map->sem_map_.post();
 			
-			fwrite(m_pbAACBuffer, 1, nRet, m_fpAacOut);
+			//fwrite(m_pbAACBuffer, 1, nRet, m_fpAacOut);
 		}
 		
 		//usleep(17*1000);
