@@ -10,7 +10,7 @@ sleep 10
 #crtmpserver should be daemon!!! when use nohup, the behavior of crtmpserver will be worng!! 
 #su -s /bin/bash -c "crtmpserver/crtmpserver crtmpserver/crtmpserver.lua" cubie
 cd $RED5_INSTALL_DIR
-su -s /bin/bash -c "./red5.sh &" cubie
+su -s /bin/bash -c "./red5.sh>/dev/null 2>/dev/null &" cubie
 
 sleep 30
 
