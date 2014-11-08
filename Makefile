@@ -50,6 +50,7 @@ all: $(TARGET)
 
 $(TARGET): $(OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
+	mkfifo fifo.pcm
 #	$(STRIP) $@
 
 clean:
