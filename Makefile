@@ -56,4 +56,4 @@ $(TARGET): $(OBJ)
 clean:
 	@rm -f $(TARGET)
 	@rm -f $(OBJ)
-
+	@rm -f fifo.pcm
