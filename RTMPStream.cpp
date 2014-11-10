@@ -1154,6 +1154,7 @@ bool CRTMPStream::SendCapEncode(void)
 			char tmp[64];
 			strftime( tmp, sizeof(tmp), "%Y%m%d%H%M%S_log.txt", localtime(&t) ); //格式化输出.
 			fprintf(stderr, "time:%s, line:%d ::Send error!!\n", tmp, __LINE__);
+			fprintf(stderr, "naluUnit.size:%d, naluUnit.pts:%lld.", naluUnit.size, naluUnit.pts);
 			
 			while(1){
 				LOGD(g_debuglog, "Rtmp restart !!");
