@@ -1010,7 +1010,7 @@ struct v4l2_output {
 struct v4l2_control {
 	__u32		     id;
 	__s32		     value;
-	__u32				 user_pt;	/* Add user pointer by raymonxiu */
+	//__u32				 user_pt;	/* Add user pointer by raymonxiu */
 };
 
 struct v4l2_ext_control {

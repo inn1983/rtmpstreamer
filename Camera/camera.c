@@ -20,6 +20,7 @@ typedef struct CameraParm
 int CameraGetOneframe(void* v4l2ctx, struct v4l2_buffer *buffer)
 {
 	/* Wait till FPS timeout expires, or thread exit message is received. */
+	
 	int ret = v4l2WaitCameraReady(v4l2ctx);
 	if (ret != 0)
 	{
@@ -27,6 +28,7 @@ int CameraGetOneframe(void* v4l2ctx, struct v4l2_buffer *buffer)
 		return __LINE__;
 	}
 	
+	//int ret = 0;
 	// get one video frame
 	struct v4l2_buffer buf;
 	memset(&buf, 0, sizeof(buf));
@@ -87,7 +89,13 @@ int StartCamera(void* v4l2ctx, int *width, int *height)
 	v4l2SetVideoParams(v4l2ctx, width, height, pix_fmt);
 
 	// set fps
-	v4l2setCaptureParams(v4l2ctx,&params);
+	//v4l2setCaptureParams(v4l2ctx,&params);
+	
+	//set Exposure mode to MANUAL. added by inn.
+	//setExposureAuto(v4l2ctx, 1);
+	
+	//set Exposure level.
+	//setExposure(v4l2ctx, -4);
 	
 	// v4l2 request buffers
 	v4l2ReqBufs(v4l2ctx, &mbuffernuber);

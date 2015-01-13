@@ -15,6 +15,10 @@ purpose:    librtmpライブラリを使用しH264データをRed5に送信
 #pragma comment(lib,"winmm.lib")
 #endif
 
+#ifdef LIBJPG_TEST
+#include</usr/include/jpeglib.h>
+#endif //LIBJPG_TEST
+
 #define LOG_NDEBUG 0
 #define LOG_TAG "venc-file"
 //#define LOG_FILE 1
@@ -30,6 +34,7 @@ FILE* g_errorlog = NULL;
 
 long long g_starttime = 0;
 bool g_time_reset = 0;
+unsigned int g_cnt_jpg = 0;
 
 
 enum
@@ -142,6 +147,59 @@ static void slice_free(slice_t *s)
 	free(s);
 }
 
+#ifdef LIBJPG_TEST
+int yuv422_to_jpeg(FILE *fp, unsigned char *image)
+{
+    unsigned long int i, j, k, x, y;
+    unsigned char *line = NULL, *newimage = NULL;
+    struct jpeg_compress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+	int WIDTH=640, HEIGHT=480;
+	
+ 
+    cinfo.err = jpeg_std_error(&jerr);  // errors get written to stderr
+    jpeg_create_compress (&cinfo);
+    cinfo.image_width = WIDTH;
+    cinfo.image_height = HEIGHT;
+    cinfo.input_components = 3;
+    cinfo.in_color_space = JCS_YCbCr;
+ 
+    jpeg_set_defaults (&cinfo);
+    jpeg_set_quality (&cinfo, 80, TRUE);
+	
+    cinfo.dct_method = JDCT_FLOAT;
+    jpeg_suppress_tables(&cinfo, TRUE);
+    jpeg_stdio_dest (&cinfo, fp);     // data written to file
+    jpeg_start_compress (&cinfo, TRUE);
+ 
+    newimage = (unsigned char *)malloc(WIDTH * HEIGHT * 3);
+    for (j=0; j < HEIGHT; j++)
+    {
+        for( i = 0, k = 0; i < (WIDTH * 2); i += 4, k += 6)
+        {
+            newimage[j * WIDTH * 3 + k + 0] = image[j * WIDTH * 2 + i + 0];
+            newimage[j * WIDTH * 3 + k + 1] = image[j * WIDTH * 2 + i + 3];
+            newimage[j * WIDTH * 3 + k + 2] = image[j * WIDTH * 2 + i + 1];
+            newimage[j * WIDTH * 3 + k + 3] = image[j * WIDTH * 2 + i + 2];
+            newimage[j * WIDTH * 3 + k + 4] = image[j * WIDTH * 2 + i + 3];
+            newimage[j * WIDTH * 3 + k + 5] = image[j * WIDTH * 2 + i + 1];
+        }
+    }
+ 
+    //newimage = (unsigned char *)malloc( HEIGHT * WIDTH * 3);
+    //memset( newimage, 0x00, HEIGHT * WIDTH * 3);
+ 
+    for (j=0, line = newimage; j < HEIGHT; j++,line += 3 * WIDTH)
+        jpeg_write_scanlines(&cinfo, &line, 1);
+ 
+    free( newimage);
+ 
+    jpeg_finish_compress (&cinfo);
+    jpeg_destroy_compress (&cinfo);
+}
+
+#endif //LIBJPG_TEST
+
 static void uyvy_nv12(const unsigned char *puyvy, unsigned char *pnv12, int width, int height)
 {
 	unsigned char *Y = pnv12;
@@ -152,22 +210,23 @@ static void uyvy_nv12(const unsigned char *puyvy, unsigned char *pnv12, int widt
 	for (i = 0; i < height / 2; i++) {
 		// 奇数行保留 U/V
 		for (j = 0; j < width / 2; j++) {
+			*Y++ = *puyvy++;
 			*UV++ = *puyvy++;	//U
 			*Y++ = *puyvy++;
 			*UV++ = *puyvy++;	//V
-			*Y++ = *puyvy++;
 		}
 
 		// 偶数行的 UV 直接扔掉
 		for (j = 0; j < width / 2; j++) {
+			*Y++ = *puyvy++;
 			puyvy++;		// 跳过 U
 			*Y++ = *puyvy++;
 			puyvy++;		// 跳过 V
-			*Y++ = *puyvy++;
 		}
 	}
 
 }
+
 
 int get_next_slice(NaluUnit &nalu)
 {
@@ -201,6 +260,7 @@ int get_next_slice(NaluUnit &nalu)
 	return rc;
 }
 
+
 int CameraSourceCallback(void *cookie,  void *data)
 {
 	CCapEncoder * venc_cam_cxt = (CCapEncoder *)cookie;
@@ -221,13 +281,42 @@ int CameraSourceCallback(void *cookie,  void *data)
 
 	memset(&input_buffer, 0, sizeof(VencInputBuffer));
 	
+#ifdef LIBJPG_TEST
+	if(g_cnt_jpg == 15)
+	{
+		char filename[16];
+		static int num = 0;
+		sprintf(filename, "camera%02d.yuv", num);
+		FILE * file_fd;
+		file_fd = fopen(filename, "w");//?片文件名
+		//fwrite(buffer, 640*480*2, 1, file_fd); //将其写入文件中
+		fclose(file_fd);
+		num++;
+	}
+	 
+	if(g_cnt_jpg == 15)
+	{
+		char filename[16];
+		static int num = 0;
+		sprintf(filename, "camera%02d.jpg", num);
+		FILE *fp=fopen(filename,"wb");
+		yuv422_to_jpeg(fp, (unsigned char*)buffer);
+		//write_JPEG_file(filename, 80, 640, 480);
+		LOGD(g_debuglog, "yuv422_to_jpeg done!!");
+		g_cnt_jpg = 0;
+		num++;
+		fclose(fp);
+	}
+	g_cnt_jpg++;
+#endif //LIBJPG_TEST
+	
 	do{	//retry
 		result = venc_device->ioctrl(venc_device, VENC_CMD_GET_ALLOCATE_INPUT_BUFFER, &input_buffer);
 		LOGD(g_debuglog, "no alloc input buffer right now");
 		usleep(10*1000);
 	}while(result !=0 );
 	
-	uyvy_nv12( (unsigned char*)buffer, input_buffer.addrvirY, 720, 480);
+	uyvy_nv12( (unsigned char*)buffer, input_buffer.addrvirY, 640, 480);
 	
 	//input_buffer.id = p_buf->index;
 	//input_buffer.addrphyY = p_buf->m.offset;
@@ -263,6 +352,7 @@ int CameraSourceCallback(void *cookie,  void *data)
 	LOGD(g_debuglog, "ID = %d\n", input_buffer.id);
 	result = venc_device->ioctrl(venc_device, VENC_CMD_ENQUENE_INPUT_BUFFER, &input_buffer);
 
+	
 	if(result < 0) {
 		//CameraDevice->returnFrame(CameraDevice, p_buf->index);
 		LOGW("video input buffer is full , skip this frame");
@@ -276,13 +366,13 @@ CCapEncoder::CCapEncoder(void)
 {
 	m_base_cfg.codectype = VENC_CODEC_H264;
 	m_base_cfg.framerate = 30;
-	m_base_cfg.input_width = 720;
+	m_base_cfg.input_width = 640;
 	m_base_cfg.input_height= 480;
-	m_base_cfg.dst_width = 720;
+	m_base_cfg.dst_width = 640;
 	m_base_cfg.dst_height = 480;
 	m_base_cfg.maxKeyInterval = 30;
 	m_base_cfg.inputformat = VENC_PIXEL_YUV420; //uv combined
-	m_base_cfg.targetbitrate = 3*1024*1024;
+	m_base_cfg.targetbitrate = 1*1024*1024;
 	
 	m_alloc_parm.buffernum = 4;
 	

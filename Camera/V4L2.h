@@ -5,7 +5,7 @@
 extern "C" {
 #endif /* __cplusplus */
 
-//#include <linux/videodev.h> 
+//#include <linux/videodev2.h> 
 //#include "videodev2.h"
 
 #include "videodev.h"
@@ -45,6 +45,8 @@ int getFrameRate(void* v4l2ctx);
 int setImageEffect(void* v4l2ctx, int effect);
 int setWhiteBalance(void* v4l2ctx, int wb);
 int setExposure(void* v4l2ctx, int exp);
+int setExposureAuto(void* v4l2ctx, int mode);	//set Exposure mode. added by inn.
+
 int setFlashMode(void* v4l2ctx, int mode); // flash mode
 int enumSize(void* v4l2ctx, char * pSize, int len);
 int setAutoFocusMode(void* v4l2ctx, int af_mode); // af mode

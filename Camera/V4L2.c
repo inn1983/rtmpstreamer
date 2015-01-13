@@ -402,8 +402,8 @@ int v4l2WaitCameraReady(void* v4l2ctx)
 	FD_SET(V4L2_Contect->mCamFd, &fds);		
 	
 	/* Timeout */
-	tv.tv_sec  = 2;
-	tv.tv_usec = 0;
+	tv.tv_sec  = 0;
+	tv.tv_usec = 30000;
 	
 	r = select(V4L2_Contect->mCamFd + 1, &fds, NULL, NULL, &tv);
 	if (r == -1) 
@@ -566,7 +566,24 @@ int setExposure(void* v4l2ctx, int exp)
 	ctrl.value = exp;
 	ret = ioctl(V4L2_Contect->mCamFd, VIDIOC_S_CTRL, &ctrl);
 	if(ret < 0) {
-		LOGV("setExposure failed!");
+		LOGV("setExposure failed!ret=%d", ret);
+	}
+
+	return ret;
+}
+
+//2015.1.6 added by inn 
+int setExposureAuto(void* v4l2ctx, int mode)
+{
+	int ret = -1;
+	struct v4l2_control ctrl;
+	V4L2_CONTEXT *V4L2_Contect = (V4L2_CONTEXT*)v4l2ctx;
+
+	ctrl.id = V4L2_CID_EXPOSURE_AUTO;
+	ctrl.value = mode;
+	ret = ioctl(V4L2_Contect->mCamFd, VIDIOC_S_CTRL, &ctrl);
+	if(ret < 0) {
+		LOGV("setExposureAuto failed!ret=%d", ret);
 	}
 
 	return ret;
@@ -653,7 +670,7 @@ int setAutoFocusCtrl(void* v4l2ctx, int af_ctrl, void *areas)
 
 	ctrl.id = V4L2_CID_CAMERA_AF_CTRL;
 	ctrl.value = af_ctrl;
-	ctrl.user_pt = (unsigned int)areas;
+	//ctrl.user_pt = (unsigned int)areas;
 	ret = ioctl(V4L2_Contect->mCamFd, VIDIOC_S_CTRL, &ctrl);
 	if (ret < 0) {
 		LOGE("setAutoFocusCtrl failed!");

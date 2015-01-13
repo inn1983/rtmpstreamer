@@ -29,11 +29,14 @@ INCLUDES:=$(foreach dir,$(SRCDIRS),-I$(dir)) \
 	-I./include/include_platform/CHIP_$(CEDARX_CHIP_VERSION)
 
 #LIBRTMP=../librtmp/librtmp.a
-LIBRTMP=-L./librtmp -lrtmp 
+LIBRTMP=-L./librtmp -lrtmp -ljpeg
 INCRTMP=-I./librtmp
 
 CFLAGS += -Wall -DOS_LINUX -O2 -g $(INCLUDES) $(INCRTMP)
 CXXFLAGS += -Wall -DOS_LINUX -O2 -g $(INCLUDES) $(INCRTMP)
+#CFLAGS += -DLIBJPG_TEST
+#CXXFLAGS += -DLIBJPG_TEST
+
 #LIBS += ./lib/A20/libvencoder.so \
 #	$(LIVE_LIBS) -lpthread -lccgnu2 -ldl
 
